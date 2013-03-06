@@ -560,6 +560,8 @@ eventcb(struct bufferevent *bev, short events, void *arg)
 		int	 size;
 
 		fprintf(stderr, "Connected (libevent)\n");
+
+		memset(&frame, 0, sizeof(frame));
 		frame.command = CLIENT_CONNECT;
 		TAILQ_INIT(&frame.headers);
 
@@ -678,6 +680,7 @@ stomp_subscribe(struct stomp_connection *connection, char *destination)
 	struct stomp_header	*header;
 	static int		 id = 0;
 
+	memset(&frame, 0, sizeof(frame));
 	frame.command = CLIENT_SUBSCRIBE;
 	TAILQ_INIT(&frame.headers);
 
