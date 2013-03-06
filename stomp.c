@@ -317,7 +317,8 @@ stomp_frame_publish(struct stomp_connection *connection,
 }
 
 void
-stomp_frame_receive(struct stomp_connection *connection)
+stomp_frame_receive(struct stomp_connection *connection,
+    struct stomp_frame *frame)
 {
 	struct stomp_header	*header;
 
@@ -332,9 +333,9 @@ stomp_frame_receive(struct stomp_connection *connection)
 #endif
 
 	/* Dependent on negotiated version, check required headers, etc. */
-	switch (connection->frame.command) {
+	switch (frame->command) {
 	case SERVER_CONNECTED:
-		if ((header = stomp_header_find(&connection->frame.headers,
+		if ((header = stomp_header_find(&frame->headers,
 		    "version")) != NULL) {
 			if (!strcmp(header->value, "1.2")) {
 				connection->version = STOMP_VERSION_1_2;
@@ -347,7 +348,7 @@ stomp_frame_receive(struct stomp_connection *connection)
 				/* FIXME handle error */
 			}
 		}
-		if ((header = stomp_header_find(&connection->frame.headers,
+		if ((header = stomp_header_find(&frame->headers,
 		    "heart-beat")) != NULL) {
 			int	 sx, sy;
 
@@ -397,7 +398,7 @@ stomp_frame_receive(struct stomp_connection *connection)
 		break;
 	case SERVER_RECEIPT:
 	case SERVER_ERROR:
-		fprintf(stderr, "Error -> %s", connection->frame.body);
+		fprintf(stderr, "Error -> %s", frame->body);
 		break;
 	default:
 		break;
@@ -408,15 +409,6 @@ stomp_frame_receive(struct stomp_connection *connection)
 	if (connection->readcb)
 		connection->readcb(&connection->frame);
 #endif
-
-	/* Clear headers */
-	stomp_headers_destroy(&connection->frame.headers);
-
-	/* Free body */
-	if (connection->frame.body) {
-		free(connection->frame.body);
-		connection->frame.body = NULL;
-	}
 }
 
 void
@@ -533,9 +525,16 @@ stomp_read(struct bufferevent *bev, void *arg)
 			evbuffer_drain(input, 1);
 
 			/* We have a whole frame by now */
-			stomp_frame_receive(connection);
+			stomp_frame_receive(connection, &connection->frame);
 
-			/* free() things */
+			/* Clear headers */
+			stomp_headers_destroy(&connection->frame.headers);
+
+			/* Free body */
+			if (connection->frame.body) {
+				free(connection->frame.body);
+				connection->frame.body = NULL;
+			}
 
 			connection->state = STOMP_FRAME_OR_KEEPALIVE;
 			break;
