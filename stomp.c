@@ -108,7 +108,7 @@ struct stomp_connection {
 
 	/* Callbacks */
 	void			(*connectcb)(struct stomp_connection *c);
-	void			(*readcb)(struct stomp_frame *f);
+	void			(*readcb)(struct stomp_connection *c, struct stomp_frame *f);
 
 	/* Heartbeat support */
 	int			  cx;
@@ -117,9 +117,19 @@ struct stomp_connection {
 	struct timeval		  heartbeat_tv;
 	struct event		 *timeout_ev;
 	struct timeval		  timeout_tv;
+
+	/* Subscriptions */
+	int			  subscription_id;
+	TAILQ_HEAD(stomp_subscriptions, stomp_subscription)	 subscriptions;
+
+	/* Transactions */
+	int			  transaction_id;
+	TAILQ_HEAD(stomp_transactions, stomp_transaction)	 transactions;
 };
 
 struct event_base	*base;
+
+struct stomp_transaction	*transaction;
 
 struct stomp_connection
 *stomp_connection_new(void)
@@ -129,6 +139,8 @@ struct stomp_connection
 	if ((connection = calloc(1, sizeof(struct stomp_connection))) != NULL) {
 		connection->state = STOMP_FRAME_OR_KEEPALIVE;
 		TAILQ_INIT(&connection->frame.headers);
+		TAILQ_INIT(&connection->subscriptions);
+		TAILQ_INIT(&connection->transactions);
 	}
 
 	return (connection);
@@ -215,6 +227,13 @@ stomp_frame_publish(struct stomp_connection *connection,
     struct stomp_frame *frame)
 {
 	struct stomp_header	*header;
+
+	fprintf(stderr, "Frame -> %s\n", stomp_client_commands[frame->command]);
+
+	for (header = TAILQ_FIRST(&frame->headers); header;
+	    header = TAILQ_NEXT(header, entry))
+		fprintf(stderr, "Header -> %s = %s\n", header->name,
+		    header->value);
 
 	/* Dependent on negotiated version, check required headers, etc. */
 	switch (frame->command) {
@@ -323,14 +342,12 @@ stomp_frame_receive(struct stomp_connection *connection,
 	struct stomp_header	*header;
 
 	/* Receive frame */
-#if 0
-	fprintf(stderr, "Frame -> %s\n", stomp_server_commands[connection->frame.command]);
+	fprintf(stderr, "Frame -> %s\n", stomp_server_commands[frame->command]);
 
-	for (header = TAILQ_FIRST(&connection->frame.headers); header;
+	for (header = TAILQ_FIRST(&frame->headers); header;
 	    header = TAILQ_NEXT(header, entry))
 		fprintf(stderr, "Header -> %s = %s\n", header->name,
 		    header->value);
-#endif
 
 	/* Dependent on negotiated version, check required headers, etc. */
 	switch (frame->command) {
@@ -394,7 +411,7 @@ stomp_frame_receive(struct stomp_connection *connection,
 		break;
 	case SERVER_MESSAGE:
 		if (connection->readcb)
-			connection->readcb(&connection->frame);
+			connection->readcb(connection, &connection->frame);
 		break;
 	case SERVER_RECEIPT:
 	case SERVER_ERROR:
@@ -579,7 +596,7 @@ eventcb(struct bufferevent *bev, short events, void *arg)
 		size = snprintf(NULL, 0, "%u,%u", connection->cx,
 		    connection->cy);
 		header->value = calloc(size + 1, sizeof(char));
-		snprintf(header->value, size, "%u,%u", connection->cx,
+		sprintf(header->value, "%u,%u", connection->cx,
 		    connection->cy);
 		TAILQ_INSERT_TAIL(&frame.headers, header, entry);
 
@@ -613,7 +630,7 @@ stomp_init(struct event_base *b)
 struct stomp_connection
 *stomp_connect(char *host, int port, int version, char *vhost, SSL_CTX *ctx,
     int cx, int cy, void (*connect_cb)(struct stomp_connection *c),
-    void (*read_cb)(struct stomp_frame *f))
+    void (*read_cb)(struct stomp_connection *c, struct stomp_frame *f))
 {
 	struct stomp_connection	*connection;
 	struct sockaddr_in	 sin;
@@ -672,12 +689,13 @@ struct stomp_connection
 	return (connection);
 }
 
-void
-stomp_subscribe(struct stomp_connection *connection, char *destination)
+struct stomp_subscription
+*stomp_subscribe(struct stomp_connection *connection, char *destination)
 {
-	struct stomp_frame	 frame;
-	struct stomp_header	*header;
-	static int		 id = 0;
+	struct stomp_frame		 frame;
+	struct stomp_header		*header;
+	struct stomp_subscription	*subscription;
+	int				 size;
 
 	memset(&frame, 0, sizeof(frame));
 	frame.command = CLIENT_SUBSCRIBE;
@@ -685,13 +703,164 @@ stomp_subscribe(struct stomp_connection *connection, char *destination)
 
 	header = calloc(1, sizeof(struct stomp_header));
 	header->name = strdup("id");
-	header->value = strdup("0");
+	size = snprintf(NULL, 0, "%d", connection->subscription_id);
+	header->value = calloc(size + 1, sizeof(char));
+	sprintf(header->value, "%d", connection->subscription_id++);
 	TAILQ_INSERT_TAIL(&frame.headers, header, entry);
 
 	header = calloc(1, sizeof(struct stomp_header));
 	header->name = strdup("destination");
 	header->value = strdup(destination);
 	TAILQ_INSERT_TAIL(&frame.headers, header, entry);
+
+	header = calloc(1, sizeof(struct stomp_header));
+	header->name = strdup("ack");
+	header->value = strdup("client-individual");
+	TAILQ_INSERT_TAIL(&frame.headers, header, entry);
+
+	stomp_frame_publish(connection, &frame);
+
+	/* Clear down headers */
+	stomp_headers_destroy(&frame.headers);
+
+	return (subscription);
+}
+
+struct stomp_transaction
+*stomp_transaction_begin(struct stomp_connection *connection)
+{
+	struct stomp_frame		 frame;
+	struct stomp_header		*header;
+	struct stomp_transaction	*transaction;
+	int				 size;
+
+	memset(&frame, 0, sizeof(frame));
+	frame.command = CLIENT_BEGIN;
+	TAILQ_INIT(&frame.headers);
+
+	transaction = calloc(1, sizeof(struct stomp_transaction));
+	size = snprintf(NULL, 0, "tx%d", connection->transaction_id);
+	transaction->id = calloc(size + 1, sizeof(char));
+	sprintf(transaction->id, "tx%d", connection->transaction_id++);
+
+	header = calloc(1, sizeof(struct stomp_header));
+	header->name = strdup("transaction");
+	header->value = strdup(transaction->id);
+	TAILQ_INSERT_TAIL(&frame.headers, header, entry);
+
+	stomp_frame_publish(connection, &frame);
+
+	/* Clear down headers */
+	stomp_headers_destroy(&frame.headers);
+
+	TAILQ_INSERT_TAIL(&connection->transactions, transaction, entry);
+
+	return (transaction);
+}
+
+void
+stomp_transaction_commit(struct stomp_connection *connection,
+    struct stomp_transaction *transaction)
+{
+	struct stomp_frame	 frame;
+	struct stomp_header	*header;
+
+	memset(&frame, 0, sizeof(frame));
+	frame.command = CLIENT_COMMIT;
+	TAILQ_INIT(&frame.headers);
+
+	header = calloc(1, sizeof(struct stomp_header));
+	header->name = strdup("transaction");
+	header->value = strdup(transaction->id);
+	TAILQ_INSERT_TAIL(&frame.headers, header, entry);
+
+	stomp_frame_publish(connection, &frame);
+
+	/* Clear down headers */
+	stomp_headers_destroy(&frame.headers);
+
+	TAILQ_REMOVE(&connection->transactions, transaction, entry);
+	free(transaction->id);
+	free(transaction);
+}
+
+void
+stomp_transaction_abort(struct stomp_connection *connection,
+    struct stomp_transaction *transaction)
+{
+	struct stomp_frame	 frame;
+	struct stomp_header	*header;
+
+	memset(&frame, 0, sizeof(frame));
+	frame.command = CLIENT_ABORT;
+	TAILQ_INIT(&frame.headers);
+
+	header = calloc(1, sizeof(struct stomp_header));
+	header->name = strdup("transaction");
+	header->value = strdup(transaction->id);
+	TAILQ_INSERT_TAIL(&frame.headers, header, entry);
+
+	stomp_frame_publish(connection, &frame);
+
+	/* Clear down headers */
+	stomp_headers_destroy(&frame.headers);
+
+	TAILQ_REMOVE(&connection->transactions, transaction, entry);
+	free(transaction->id);
+	free(transaction);
+}
+
+void
+stomp_message_ack(struct stomp_connection *connection, char *ack,
+    struct stomp_transaction *transaction)
+{
+	struct stomp_frame	 frame;
+	struct stomp_header	*header;
+
+	memset(&frame, 0, sizeof(frame));
+	frame.command = CLIENT_ACK;
+	TAILQ_INIT(&frame.headers);
+
+	header = calloc(1, sizeof(struct stomp_header));
+	header->name = strdup("id");
+	header->value = strdup(ack);
+	TAILQ_INSERT_TAIL(&frame.headers, header, entry);
+
+	if (transaction) {
+		header = calloc(1, sizeof(struct stomp_header));
+		header->name = strdup("transaction");
+		header->value = strdup(transaction->id);
+		TAILQ_INSERT_TAIL(&frame.headers, header, entry);
+	}
+
+	stomp_frame_publish(connection, &frame);
+
+	/* Clear down headers */
+	stomp_headers_destroy(&frame.headers);
+}
+
+void
+stomp_message_nack(struct stomp_connection *connection, char *ack,
+    struct stomp_transaction *transaction)
+{
+	struct stomp_frame	 frame;
+	struct stomp_header	*header;
+
+	memset(&frame, 0, sizeof(frame));
+	frame.command = CLIENT_NACK;
+	TAILQ_INIT(&frame.headers);
+
+	header = calloc(1, sizeof(struct stomp_header));
+	header->name = strdup("id");
+	header->value = strdup(ack);
+	TAILQ_INSERT_TAIL(&frame.headers, header, entry);
+
+	if (transaction) {
+		header = calloc(1, sizeof(struct stomp_header));
+		header->name = strdup("transaction");
+		header->value = strdup(transaction->id);
+		TAILQ_INSERT_TAIL(&frame.headers, header, entry);
+	}
 
 	stomp_frame_publish(connection, &frame);
 
@@ -704,16 +873,34 @@ test_connect_cb(struct stomp_connection *connection)
 {
 	fprintf(stderr, "Connected (STOMP)\n");
 	stomp_subscribe(connection, "/queue/foo");
+	transaction = stomp_transaction_begin(connection);
 	//stomp_subscribe(connection, "/exchange/foo/bar");
 }
 
 void
-test_read_cb(struct stomp_frame *frame)
+test_read_cb(struct stomp_connection *connection, struct stomp_frame *frame)
 {
+	struct stomp_header	*header;
+	static int		 count = 0;
+
 	fprintf(stderr, "Got frame -> %s\n",
 	    stomp_server_commands[frame->command]);
 	if (frame->body)
 		fprintf(stderr, "Frame body -> %s\n", frame->body);
+	count++;
+	if ((header = stomp_header_find(&frame->headers, "ack")) != NULL) {
+		//stomp_message_ack(connection, header->value, transaction);
+		stomp_message_nack(connection, header->value, transaction);
+	}
+	/* After receiving three messages, commit or abort the transaction */
+	if (count == 3) {
+		//stomp_transaction_abort(connection, transaction);
+		stomp_transaction_commit(connection, transaction);
+		//stomp_disconnect(connection);
+		count = 0;
+		transaction = stomp_transaction_begin(connection);
+	}
+		
 }
 
 int
