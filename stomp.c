@@ -14,6 +14,8 @@
 #include <event2/bufferevent.h>
 #include <event2/bufferevent_ssl.h>
 
+#include "stomp.h"
+
 #define	STOMP_VERSION_1_0		(1 << 0)
 #define	STOMP_VERSION_1_1		(1 << 1)
 #define	STOMP_VERSION_1_2		(1 << 2)
@@ -22,26 +24,6 @@
 #define	STOMP_ACK_AUTO			0
 #define	STOMP_ACK_CLIENT		1
 #define	STOMP_ACK_CLIENT_INDIVIDUAL	2
-
-enum stomp_frame_state {
-	STOMP_FRAME_OR_KEEPALIVE,
-	STOMP_FRAME_HEADERS,
-	STOMP_FRAME_BODY
-};
-
-struct stomp_header {
-	TAILQ_ENTRY(stomp_header)	 entry;
-	char				*name;
-	char				*value;
-};
-
-enum stomp_server_command {
-	SERVER_CONNECTED,
-	SERVER_MESSAGE,
-	SERVER_RECEIPT,
-	SERVER_ERROR,
-	SERVER_MAX_COMMAND
-};
 
 char *stomp_server_commands[SERVER_MAX_COMMAND] = {
 	"CONNECTED",
@@ -77,54 +59,6 @@ char *stomp_client_commands[CLIENT_MAX_COMMAND] = {
 	"DISCONNECT",
 	"CONNECT",
 	"STOMP"
-};
-
-struct stomp_frame {
-	enum stomp_server_command		 command;
-	TAILQ_HEAD(stomp_headers, stomp_header)	 headers;
-	unsigned char				*body;
-};
-
-struct stomp_subscription {
-	TAILQ_ENTRY(stomp_subscription)	 entry;
-	char				*id;
-};
-
-struct stomp_transaction {
-	TAILQ_ENTRY(stomp_transaction)	 entry;
-	char				*id;
-};
-
-struct stomp_connection {
-	struct bufferevent	 *bev;
-
-	int			  version;
-
-	char			 *vhost;
-
-	/* Frame we're currently receiving */
-	enum stomp_frame_state	  state;
-	struct stomp_frame	  frame;
-
-	/* Callbacks */
-	void			(*connectcb)(struct stomp_connection *c);
-	void			(*readcb)(struct stomp_connection *c, struct stomp_frame *f);
-
-	/* Heartbeat support */
-	int			  cx;
-	int			  cy;
-	struct event		 *heartbeat_ev;
-	struct timeval		  heartbeat_tv;
-	struct event		 *timeout_ev;
-	struct timeval		  timeout_tv;
-
-	/* Subscriptions */
-	int			  subscription_id;
-	TAILQ_HEAD(stomp_subscriptions, stomp_subscription)	 subscriptions;
-
-	/* Transactions */
-	int			  transaction_id;
-	TAILQ_HEAD(stomp_transactions, stomp_transaction)	 transactions;
 };
 
 struct event_base	*base;
@@ -228,11 +162,11 @@ stomp_frame_publish(struct stomp_connection *connection,
 {
 	struct stomp_header	*header;
 
-	fprintf(stderr, "Frame -> %s\n", stomp_client_commands[frame->command]);
+	fprintf(stderr, ">>> Frame -> %s\n", stomp_client_commands[frame->command]);
 
 	for (header = TAILQ_FIRST(&frame->headers); header;
 	    header = TAILQ_NEXT(header, entry))
-		fprintf(stderr, "Header -> %s = %s\n", header->name,
+		fprintf(stderr, ">>> Header -> %s = %s\n", header->name,
 		    header->value);
 
 	/* Dependent on negotiated version, check required headers, etc. */
@@ -342,11 +276,11 @@ stomp_frame_receive(struct stomp_connection *connection,
 	struct stomp_header	*header;
 
 	/* Receive frame */
-	fprintf(stderr, "Frame -> %s\n", stomp_server_commands[frame->command]);
+	fprintf(stderr, "<<< Frame -> %s\n", stomp_server_commands[frame->command]);
 
 	for (header = TAILQ_FIRST(&frame->headers); header;
 	    header = TAILQ_NEXT(header, entry))
-		fprintf(stderr, "Header -> %s = %s\n", header->name,
+		fprintf(stderr, "<<< Header -> %s = %s\n", header->name,
 		    header->value);
 
 	/* Dependent on negotiated version, check required headers, etc. */
@@ -727,7 +661,7 @@ struct stomp_subscription
 }
 
 struct stomp_transaction
-*stomp_transaction_begin(struct stomp_connection *connection)
+*stomp_begin(struct stomp_connection *connection)
 {
 	struct stomp_frame		 frame;
 	struct stomp_header		*header;
@@ -759,7 +693,7 @@ struct stomp_transaction
 }
 
 void
-stomp_transaction_commit(struct stomp_connection *connection,
+stomp_commit(struct stomp_connection *connection,
     struct stomp_transaction *transaction)
 {
 	struct stomp_frame	 frame;
@@ -785,7 +719,7 @@ stomp_transaction_commit(struct stomp_connection *connection,
 }
 
 void
-stomp_transaction_abort(struct stomp_connection *connection,
+stomp_abort(struct stomp_connection *connection,
     struct stomp_transaction *transaction)
 {
 	struct stomp_frame	 frame;
@@ -811,7 +745,7 @@ stomp_transaction_abort(struct stomp_connection *connection,
 }
 
 void
-stomp_message_ack(struct stomp_connection *connection, char *ack,
+stomp_ack(struct stomp_connection *connection, char *ack,
     struct stomp_transaction *transaction)
 {
 	struct stomp_frame	 frame;
@@ -840,7 +774,7 @@ stomp_message_ack(struct stomp_connection *connection, char *ack,
 }
 
 void
-stomp_message_nack(struct stomp_connection *connection, char *ack,
+stomp_nack(struct stomp_connection *connection, char *ack,
     struct stomp_transaction *transaction)
 {
 	struct stomp_frame	 frame;
@@ -873,7 +807,7 @@ test_connect_cb(struct stomp_connection *connection)
 {
 	fprintf(stderr, "Connected (STOMP)\n");
 	stomp_subscribe(connection, "/queue/foo");
-	transaction = stomp_transaction_begin(connection);
+	transaction = stomp_begin(connection);
 	//stomp_subscribe(connection, "/exchange/foo/bar");
 }
 
@@ -889,16 +823,16 @@ test_read_cb(struct stomp_connection *connection, struct stomp_frame *frame)
 		fprintf(stderr, "Frame body -> %s\n", frame->body);
 	count++;
 	if ((header = stomp_header_find(&frame->headers, "ack")) != NULL) {
-		//stomp_message_ack(connection, header->value, transaction);
-		stomp_message_nack(connection, header->value, transaction);
+		//stomp_ack(connection, header->value, transaction);
+		stomp_nack(connection, header->value, transaction);
 	}
 	/* After receiving three messages, commit or abort the transaction */
 	if (count == 3) {
-		//stomp_transaction_abort(connection, transaction);
-		stomp_transaction_commit(connection, transaction);
+		//stomp_abort(connection, transaction);
+		stomp_commit(connection, transaction);
 		//stomp_disconnect(connection);
 		count = 0;
-		transaction = stomp_transaction_begin(connection);
+		transaction = stomp_begin(connection);
 	}
 		
 }
