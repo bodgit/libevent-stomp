@@ -24,6 +24,8 @@ struct stomp_frame {
 struct stomp_subscription {
 	TAILQ_ENTRY(stomp_subscription)	 entry;
 	char				*id;
+	char				*destination;
+	int				 ack;
 };
 
 struct stomp_transaction {
@@ -43,6 +45,10 @@ struct stomp_connection {
 	int			  version;
 
 	char			 *vhost;
+
+	/* Bytes sent/received */
+	unsigned long long	  rx;
+	unsigned long long	  tx;
 
 	/* Frame we're currently receiving */
 	enum stomp_frame_state	  state;

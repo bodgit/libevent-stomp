@@ -492,6 +492,10 @@ stomp_read(struct bufferevent *bev, void *arg)
 		}
 
 loop:
+	/* Track how many bytes we've received */
+	fprintf(stderr, "Bytes rx -> %lld\n", connection->rx);
+	fprintf(stderr, "Bytes tx -> %lld\n", connection->tx);
+
 	/* Reenable inactivity timeout */
 	if (connection->timeout_ev)
 		evtimer_add(connection->timeout_ev, &connection->timeout_tv);
@@ -556,71 +560,32 @@ eventcb(struct bufferevent *bev, short events, void *arg)
 }
 
 void
+stomp_count_rx(struct evbuffer *buffer, const struct evbuffer_cb_info *info,
+    void *arg)
+{
+	struct stomp_connection *connection = (struct stomp_connection *)arg;
+
+	connection->rx += info->n_added;
+}
+
+void
+stomp_count_tx(struct evbuffer *buffer, const struct evbuffer_cb_info *info,
+    void *arg)
+{
+	struct stomp_connection *connection = (struct stomp_connection *)arg;
+
+	connection->tx += info->n_deleted;
+}
+
+void
 stomp_init(struct event_base *b)
 {
 	base = b;
 }
 
-struct stomp_connection
-*stomp_connect(char *host, int port, int version, char *vhost, SSL_CTX *ctx,
-    int cx, int cy, void (*connect_cb)(struct stomp_connection *c),
-    void (*read_cb)(struct stomp_connection *c, struct stomp_frame *f))
+void
+stomp_send(struct stomp_connection *connection)
 {
-	struct stomp_connection	*connection;
-	struct sockaddr_in	 sin;
-
-	if ((connection = stomp_connection_new()) == NULL)
-		return (NULL);
-
-	memset(&sin, 0, sizeof(sin));
-	sin.sin_family = AF_INET;
-	sin.sin_addr.s_addr = htonl(0xc0a8ff80);	/* 192.168.255.128 */
-	sin.sin_port = htons(port);
-
-	connection->bev = bufferevent_socket_new(base, -1,
-	    BEV_OPT_CLOSE_ON_FREE|BEV_OPT_DEFER_CALLBACKS);
-
-	if (bufferevent_socket_connect(connection->bev, (struct sockaddr *)&sin,
-	    sizeof(sin)) < 0) {
-		/* Error starting connection */
-		bufferevent_free(connection->bev);
-		free(connection);
-		return (NULL);
-	}
-
-	/* SSL support */
-	if (ctx) {
-		struct bufferevent	*bevssl;
-		SSL			*ssl = SSL_new(ctx);
-
-		if ((bevssl = bufferevent_openssl_filter_new(base,
-		    connection->bev, ssl, BUFFEREVENT_SSL_CONNECTING,
-		    BEV_OPT_CLOSE_ON_FREE|BEV_OPT_DEFER_CALLBACKS)) == NULL) {
-			bufferevent_free(connection->bev);
-			free(connection);
-			return (NULL);
-		}
-		connection->bev = bevssl;
-	}
-
-	bufferevent_setcb(connection->bev, stomp_read, NULL, eventcb,
-	    (void *)connection);
-	bufferevent_enable(connection->bev, EV_READ|EV_WRITE);
-
-	/* Desired version */
-	connection->version = version;
-
-	/* vhost */
-	connection->vhost = strdup(vhost);
-
-	/* Desired heartbeat rates */
-	connection->cx = cx;
-	connection->cy = cy;
-
-	connection->connectcb = connect_cb;
-	connection->readcb = read_cb;
-
-	return (connection);
 }
 
 struct stomp_subscription
@@ -658,6 +623,12 @@ struct stomp_subscription
 	stomp_headers_destroy(&frame.headers);
 
 	return (subscription);
+}
+
+void
+stomp_unsubscribe(struct stomp_connection *connection,
+    struct stomp_subscription *subscription)
+{
 }
 
 struct stomp_transaction
@@ -800,6 +771,101 @@ stomp_nack(struct stomp_connection *connection, char *ack,
 
 	/* Clear down headers */
 	stomp_headers_destroy(&frame.headers);
+}
+
+void
+stomp_disconnect(struct stomp_connection *connection)
+{
+}
+
+struct stomp_connection
+*stomp_connect(char *host, int port, int version, char *vhost, SSL_CTX *ctx,
+    int cx, int cy, void (*connect_cb)(struct stomp_connection *c),
+    void (*read_cb)(struct stomp_connection *c, struct stomp_frame *f))
+{
+	struct stomp_connection	*connection;
+	struct sockaddr_in	 sin;
+
+	if ((connection = stomp_connection_new()) == NULL)
+		return (NULL);
+
+	memset(&sin, 0, sizeof(sin));
+	sin.sin_family = AF_INET;
+	sin.sin_addr.s_addr = htonl(0xc0a8ff80);	/* 192.168.255.128 */
+	sin.sin_port = htons(port);
+
+	connection->bev = bufferevent_socket_new(base, -1,
+	    BEV_OPT_CLOSE_ON_FREE|BEV_OPT_DEFER_CALLBACKS);
+
+	if (bufferevent_socket_connect(connection->bev, (struct sockaddr *)&sin,
+	    sizeof(sin)) < 0) {
+		/* Error starting connection */
+		bufferevent_free(connection->bev);
+		free(connection);
+		return (NULL);
+	}
+
+	/* SSL support */
+	if (ctx) {
+		struct bufferevent	*bevssl;
+		SSL			*ssl = SSL_new(ctx);
+
+		if ((bevssl = bufferevent_openssl_filter_new(base,
+		    connection->bev, ssl, BUFFEREVENT_SSL_CONNECTING,
+		    BEV_OPT_CLOSE_ON_FREE|BEV_OPT_DEFER_CALLBACKS)) == NULL) {
+			bufferevent_free(connection->bev);
+			free(connection);
+			return (NULL);
+		}
+		connection->bev = bevssl;
+	}
+
+	bufferevent_setcb(connection->bev, stomp_read, NULL, eventcb,
+	    (void *)connection);
+	bufferevent_enable(connection->bev, EV_READ|EV_WRITE);
+
+	/* Add callbacks to the input & output buffers to track how much data
+	 * we're receiving/transmitting
+	 */
+	evbuffer_add_cb(bufferevent_get_input(connection->bev), stomp_count_rx,
+	    (void *)connection);
+	evbuffer_add_cb(bufferevent_get_output(connection->bev), stomp_count_tx,
+	    (void *)connection);
+
+	/* Desired version */
+	connection->version = version;
+
+	/* vhost */
+	connection->vhost = strdup(vhost);
+
+	/* Desired heartbeat rates */
+	connection->cx = cx;
+	connection->cy = cy;
+
+	connection->connectcb = connect_cb;
+	connection->readcb = read_cb;
+
+	return (connection);
+}
+
+void
+stomp_connected(struct stomp_connection *connection, struct stomp_frame *frame)
+{
+}
+
+void
+stomp_message(struct stomp_connection *connection, struct stomp_frame *frame)
+{
+}
+
+void
+stomp_receipt(struct stomp_connection *connection, struct stomp_frame *frame)
+{
+}
+
+void
+stomp_error(struct stomp_connection *connection, struct stomp_frame *frame)
+{
 }
 
 void
