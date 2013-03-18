@@ -265,7 +265,7 @@ stomp_frame_publish(struct stomp_connection *connection,
 	    "%c\r\n", '\0');
 
 	/* Track frame Tx */
-	connection->frame_tx++;
+	connection->frames_tx++;
 
 	if (connection->heartbeat_ev)
 		evtimer_add(connection->heartbeat_ev,
@@ -359,7 +359,7 @@ stomp_frame_receive(struct stomp_connection *connection,
 	}
 
 	/* Track frame Rx */
-	connection->frame_rx++;
+	connection->frames_rx++;
 
 #if 0
 	/* Call user-defined callback */
@@ -593,7 +593,7 @@ void
 stomp_send(struct stomp_connection *connection)
 {
 	/* Track message Tx */
-	connection->message_tx++;
+	connection->messages_tx++;
 }
 
 struct stomp_subscription
@@ -865,7 +865,7 @@ void
 stomp_message(struct stomp_connection *connection, struct stomp_frame *frame)
 {
 	/* Track message Rx */
-	connection->message_rx++;
+	connection->messages_rx++;
 }
 
 void
