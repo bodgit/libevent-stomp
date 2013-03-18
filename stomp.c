@@ -264,6 +264,9 @@ stomp_frame_publish(struct stomp_connection *connection,
 	evbuffer_add_printf(bufferevent_get_output(connection->bev),
 	    "%c\r\n", '\0');
 
+	/* Track frame Tx */
+	connection->frame_tx++;
+
 	if (connection->heartbeat_ev)
 		evtimer_add(connection->heartbeat_ev,
 		    &connection->heartbeat_tv);
@@ -354,6 +357,9 @@ stomp_frame_receive(struct stomp_connection *connection,
 	default:
 		break;
 	}
+
+	/* Track frame Rx */
+	connection->frame_rx++;
 
 #if 0
 	/* Call user-defined callback */
@@ -493,8 +499,8 @@ stomp_read(struct bufferevent *bev, void *arg)
 
 loop:
 	/* Track how many bytes we've received */
-	fprintf(stderr, "Bytes rx -> %lld\n", connection->rx);
-	fprintf(stderr, "Bytes tx -> %lld\n", connection->tx);
+	fprintf(stderr, "Bytes rx -> %lld\n", connection->bytes_rx);
+	fprintf(stderr, "Bytes tx -> %lld\n", connection->bytes_tx);
 
 	/* Reenable inactivity timeout */
 	if (connection->timeout_ev)
@@ -565,7 +571,7 @@ stomp_count_rx(struct evbuffer *buffer, const struct evbuffer_cb_info *info,
 {
 	struct stomp_connection *connection = (struct stomp_connection *)arg;
 
-	connection->rx += info->n_added;
+	connection->bytes_rx += info->n_added;
 }
 
 void
@@ -574,7 +580,7 @@ stomp_count_tx(struct evbuffer *buffer, const struct evbuffer_cb_info *info,
 {
 	struct stomp_connection *connection = (struct stomp_connection *)arg;
 
-	connection->tx += info->n_deleted;
+	connection->bytes_tx += info->n_deleted;
 }
 
 void
@@ -586,6 +592,8 @@ stomp_init(struct event_base *b)
 void
 stomp_send(struct stomp_connection *connection)
 {
+	/* Track message Tx */
+	connection->message_tx++;
 }
 
 struct stomp_subscription
@@ -856,6 +864,8 @@ stomp_connected(struct stomp_connection *connection, struct stomp_frame *frame)
 void
 stomp_message(struct stomp_connection *connection, struct stomp_frame *frame)
 {
+	/* Track message Rx */
+	connection->message_rx++;
 }
 
 void

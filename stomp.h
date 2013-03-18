@@ -47,8 +47,16 @@ struct stomp_connection {
 	char			 *vhost;
 
 	/* Bytes sent/received */
-	unsigned long long	  rx;
-	unsigned long long	  tx;
+	unsigned long long	  bytes_rx;
+	unsigned long long	  bytes_tx;
+
+	/* Frames sent/received */
+	unsigned long long	  frames_rx;
+	unsigned long long	  frames_tx;
+
+	/* Messages sent/received */
+	unsigned long long	  messages_rx;
+	unsigned long long	  messages_tx;
 
 	/* Frame we're currently receiving */
 	enum stomp_frame_state	  state;
