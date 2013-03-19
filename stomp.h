@@ -42,9 +42,19 @@ enum stomp_frame_state {
 struct stomp_connection {
 	struct bufferevent	 *bev;
 
+	short			  port;
+
 	int			  version;
 
 	char			 *vhost;
+
+	/* SSL */
+	SSL_CTX			 *ctx;
+
+	/* (Re)connect */
+	struct event		 *connect_ev;
+	struct timeval		  connect_tv[2];
+	int			  connect_index;
 
 	/* Bytes sent/received */
 	unsigned long long	  bytes_rx;
@@ -84,8 +94,8 @@ struct stomp_connection {
 };
 
 void				 stomp_init(struct event_base *);
-struct stomp_connection		*stomp_connect(char *, int, int, char *,
-				    SSL_CTX *, int, int,
+struct stomp_connection		*stomp_connect(char *, short, int, char *,
+				    SSL_CTX *, struct timeval, int, int,
 				    void (*connect_cb)(struct stomp_connection *),
 				    void (*read_cb)(struct stomp_connection *, struct stomp_frame *));
 struct stomp_subscription	*stomp_subscribe(struct stomp_connection *,

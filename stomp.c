@@ -65,21 +65,6 @@ struct event_base	*base;
 
 struct stomp_transaction	*transaction;
 
-struct stomp_connection
-*stomp_connection_new(void)
-{
-	struct stomp_connection	*connection;
-
-	if ((connection = calloc(1, sizeof(struct stomp_connection))) != NULL) {
-		connection->state = STOMP_FRAME_OR_KEEPALIVE;
-		TAILQ_INIT(&connection->frame.headers);
-		TAILQ_INIT(&connection->subscriptions);
-		TAILQ_INIT(&connection->transactions);
-	}
-
-	return (connection);
-}
-
 struct stomp_header
 *stomp_header_new(void)
 {
@@ -521,6 +506,9 @@ eventcb(struct bufferevent *bev, short events, void *arg)
 
 		fprintf(stderr, "Connected (libevent)\n");
 
+		/* Reset backoff to immediate */
+		connection->connect_index = 0;
+
 		memset(&frame, 0, sizeof(frame));
 		frame.command = CLIENT_CONNECT;
 		TAILQ_INIT(&frame.headers);
@@ -561,7 +549,16 @@ eventcb(struct bufferevent *bev, short events, void *arg)
 		/* FIXME Need more free()'s here */
 		if (connection->frame.body)
 			free(connection->frame.body);
-		free(connection);
+
+		/* Schedule a reconnect attempt */
+		evtimer_add(connection->connect_ev,
+		    &connection->connect_tv[connection->connect_index]);
+
+		/* If this attempt is after no delay, set the next attempt (and
+		 * all subsequent ones) to be after a delay
+		 */
+		if (connection->connect_index == 0)
+			connection->connect_index++;
 	}
 }
 
@@ -786,21 +783,18 @@ stomp_disconnect(struct stomp_connection *connection)
 {
 }
 
-struct stomp_connection
-*stomp_connect(char *host, int port, int version, char *vhost, SSL_CTX *ctx,
-    int cx, int cy, void (*connect_cb)(struct stomp_connection *c),
-    void (*read_cb)(struct stomp_connection *c, struct stomp_frame *f))
+void
+stomp_reconnect(int fd, short event, void *arg)
 {
-	struct stomp_connection	*connection;
+	struct stomp_connection	*connection = (struct stomp_connection *)arg;
 	struct sockaddr_in	 sin;
 
-	if ((connection = stomp_connection_new()) == NULL)
-		return (NULL);
+	fprintf(stderr, "Connection attempt\n");
 
 	memset(&sin, 0, sizeof(sin));
 	sin.sin_family = AF_INET;
 	sin.sin_addr.s_addr = htonl(0xc0a8ff80);	/* 192.168.255.128 */
-	sin.sin_port = htons(port);
+	sin.sin_port = htons(connection->port);
 
 	connection->bev = bufferevent_socket_new(base, -1,
 	    BEV_OPT_CLOSE_ON_FREE|BEV_OPT_DEFER_CALLBACKS);
@@ -809,21 +803,19 @@ struct stomp_connection
 	    sizeof(sin)) < 0) {
 		/* Error starting connection */
 		bufferevent_free(connection->bev);
-		free(connection);
-		return (NULL);
+		return;
 	}
 
 	/* SSL support */
-	if (ctx) {
+	if (connection->ctx) {
 		struct bufferevent	*bevssl;
-		SSL			*ssl = SSL_new(ctx);
+		SSL			*ssl = SSL_new(connection->ctx);
 
 		if ((bevssl = bufferevent_openssl_filter_new(base,
 		    connection->bev, ssl, BUFFEREVENT_SSL_CONNECTING,
 		    BEV_OPT_CLOSE_ON_FREE|BEV_OPT_DEFER_CALLBACKS)) == NULL) {
 			bufferevent_free(connection->bev);
-			free(connection);
-			return (NULL);
+			return;
 		}
 		connection->bev = bevssl;
 	}
@@ -839,12 +831,53 @@ struct stomp_connection
 	    (void *)connection);
 	evbuffer_add_cb(bufferevent_get_output(connection->bev), stomp_count_tx,
 	    (void *)connection);
+}
+
+struct stomp_connection
+*stomp_connection_new(void)
+{
+	struct stomp_connection	*connection;
+
+	if ((connection = calloc(1, sizeof(struct stomp_connection))) != NULL) {
+		connection->state = STOMP_FRAME_OR_KEEPALIVE;
+		connection->connect_ev = evtimer_new(base, stomp_reconnect,
+		    (void *)connection);
+		TAILQ_INIT(&connection->frame.headers);
+		TAILQ_INIT(&connection->subscriptions);
+		TAILQ_INIT(&connection->transactions);
+	}
+
+	return (connection);
+}
+
+struct stomp_connection
+*stomp_connect(char *host, short port, int version, char *vhost, SSL_CTX *ctx,
+    struct timeval tv, int cx, int cy,
+    void (*connect_cb)(struct stomp_connection *c),
+    void (*read_cb)(struct stomp_connection *c, struct stomp_frame *f))
+{
+	struct stomp_connection	*connection;
+
+	if ((connection = stomp_connection_new()) == NULL)
+		return (NULL);
+
+	/* Set up timer to (re)connect */
+	connection->connect_tv[1] = tv;
+	evtimer_add(connection->connect_ev,
+	    &connection->connect_tv[connection->connect_index]);
+	connection->connect_index++;
+
+	/* TCP port */
+	connection->port = port;
 
 	/* Desired version */
 	connection->version = version;
 
 	/* vhost */
 	connection->vhost = strdup(vhost);
+
+	/* SSL */
+	connection->ctx = ctx;
 
 	/* Desired heartbeat rates */
 	connection->cx = cx;
@@ -899,8 +932,8 @@ test_read_cb(struct stomp_connection *connection, struct stomp_frame *frame)
 		fprintf(stderr, "Frame body -> %s\n", frame->body);
 	count++;
 	if ((header = stomp_header_find(&frame->headers, "ack")) != NULL) {
-		//stomp_ack(connection, header->value, transaction);
-		stomp_nack(connection, header->value, transaction);
+		stomp_ack(connection, header->value, transaction);
+		//stomp_nack(connection, header->value, transaction);
 	}
 	/* After receiving three messages, commit or abort the transaction */
 	if (count == 3) {
@@ -918,6 +951,7 @@ main(int argc, char *argv[])
 {
 	struct event_base	*b;
 	SSL_CTX			*ctx;
+	struct timeval		 tv = { 10, 0 };	/* 10 seconds */
 
 	SSL_load_error_strings();
 	SSL_library_init();
@@ -932,7 +966,7 @@ main(int argc, char *argv[])
 	stomp_init(b);
 
 	if (stomp_connect("192.168.255.128", 61614, STOMP_VERSION_ANY, "/",
-	    ctx, 1000, 1000, test_connect_cb, test_read_cb) == NULL)
+	    ctx, tv, 1000, 1000, test_connect_cb, test_read_cb) == NULL)
 		return (-1);
 
 	event_base_dispatch(b);
