@@ -40,7 +40,7 @@ Example usage:
             struct stomp_connection *c;
     
             base = event_base_new();
-            stomp_init(base);
+            stomp_init(base, NULL);
     
             /* Pass an SSL_CTX * as argument #5 for SSL/TLS support */
             if ((c = stomp_connection_new("192.0.2.1", 61613,

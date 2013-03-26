@@ -47,7 +47,8 @@ enum stomp_frame_state {
 struct stomp_connection {
 	struct bufferevent	 *bev;
 
-	short			  port;
+	char			 *host;
+	unsigned short		  port;
 
 	/* Version(s) requested & negotiated */
 	int			  version_req;
@@ -106,10 +107,11 @@ struct stomp_connection {
 	unsigned long long	  receipt_id;
 };
 
-void				 stomp_init(struct event_base *);
-struct stomp_connection		*stomp_connection_new(char *, short, int,
-				    char *, SSL_CTX *, struct timeval, int,
-				    int);
+void				 stomp_init(struct event_base *,
+				    struct evdns_base *);
+struct stomp_connection		*stomp_connection_new(char *, unsigned short,
+				    int, char *, SSL_CTX *, struct timeval,
+				    int, int);
 void				 stomp_connection_setcb(struct stomp_connection *,
 				    enum stomp_server_command,
 				    void (*callback)(struct stomp_connection *,

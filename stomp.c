@@ -10,6 +10,7 @@
 #include <openssl/ssl.h>
 
 #include <event2/event.h>
+#include <event2/dns.h>
 #include <event2/buffer.h>
 #include <event2/bufferevent.h>
 #include <event2/bufferevent_ssl.h>
@@ -71,6 +72,7 @@ char *stomp_client_commands[CLIENT_MAX_COMMAND] = {
 };
 
 struct event_base	*base;
+struct evdns_base	*dns;
 
 struct stomp_transaction	*transaction;
 
@@ -400,7 +402,14 @@ eventcb(struct bufferevent *bev, short events, void *arg)
 		/* Clear down headers */
 		stomp_headers_destroy(&frame.headers);
 	} else if (events & (BEV_EVENT_ERROR|BEV_EVENT_EOF)) {
-		fprintf(stderr, "Error\n");
+		if (events & BEV_EVENT_ERROR) {
+			fprintf(stderr, "Error\n");
+			int err = bufferevent_socket_get_dns_error(bev);
+			if (err)
+				fprintf(stderr, "DNS error: %s\n",
+				    evutil_gai_strerror(err));
+		}
+
 		if (connection->timeout_ev &&
 		    evtimer_pending(connection->timeout_ev, NULL))
 			evtimer_del(connection->timeout_ev);
@@ -444,9 +453,15 @@ stomp_count_tx(struct evbuffer *buffer, const struct evbuffer_cb_info *info,
 }
 
 void
-stomp_init(struct event_base *b)
+stomp_init(struct event_base *b, struct evdns_base *d)
 {
 	base = b;
+
+	/* Use provided evdns_base if given, otherwise create our own */
+	if (d)
+		dns = d;
+	else
+		dns = evdns_base_new(base, 1);
 }
 
 void
@@ -680,18 +695,12 @@ void
 stomp_reconnect(int fd, short event, void *arg)
 {
 	struct stomp_connection	*connection = (struct stomp_connection *)arg;
-	struct sockaddr_in	 sin;
-
-	memset(&sin, 0, sizeof(sin));
-	sin.sin_family = AF_INET;
-	sin.sin_addr.s_addr = htonl(0xc0a8ff80);	/* 192.168.255.128 */
-	sin.sin_port = htons(connection->port);
 
 	connection->bev = bufferevent_socket_new(base, -1,
 	    BEV_OPT_CLOSE_ON_FREE|BEV_OPT_DEFER_CALLBACKS);
 
-	if (bufferevent_socket_connect(connection->bev, (struct sockaddr *)&sin,
-	    sizeof(sin)) < 0) {
+	if (bufferevent_socket_connect_hostname(connection->bev, dns,
+	    AF_UNSPEC, connection->host, connection->port) < 0) {
 		/* Error starting connection */
 		bufferevent_free(connection->bev);
 		return;
@@ -725,7 +734,7 @@ stomp_reconnect(int fd, short event, void *arg)
 }
 
 struct stomp_connection *
-stomp_connection_new(char *host, short port, int version, char *vhost,
+stomp_connection_new(char *host, unsigned short port, int version, char *vhost,
     SSL_CTX *ctx, struct timeval tv, int cx, int cy)
 {
 	struct stomp_connection	*connection;
@@ -742,6 +751,9 @@ stomp_connection_new(char *host, short port, int version, char *vhost,
 		TAILQ_INIT(&connection->frame.headers);
 		TAILQ_INIT(&connection->subscriptions);
 		TAILQ_INIT(&connection->transactions);
+
+		/* Hostname */
+		connection->host = strdup(host);
 
 		/* TCP port */
 		connection->port = port;
@@ -923,7 +935,7 @@ main(int argc, char *argv[])
 
 	b = event_base_new();
 
-	stomp_init(b);
+	stomp_init(b, NULL);
 
 	if ((ca = stomp_connection_new("192.168.255.128", 61613,
 	    STOMP_VERSION_ANY, "/", NULL, tv, 1000, 1000)) == NULL)
