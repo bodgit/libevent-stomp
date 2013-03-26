@@ -8,6 +8,7 @@
 #include <sys/param.h>
 
 #include <openssl/ssl.h>
+#include <openssl/err.h>
 
 #include <event2/event.h>
 #include <event2/dns.h>
@@ -408,6 +409,10 @@ eventcb(struct bufferevent *bev, short events, void *arg)
 			if (err)
 				fprintf(stderr, "DNS error: %s\n",
 				    evutil_gai_strerror(err));
+			unsigned long ssl = bufferevent_get_openssl_error(connection->bev);
+			if (ssl)
+				fprintf(stderr, "SSL error: %s\n",
+				    ERR_error_string(ssl, NULL));
 		}
 
 		if (connection->timeout_ev &&
