@@ -1,6 +1,11 @@
 #ifndef _STOMP_H
 #define _STOMP_H
 
+#define	STOMP_VERSION_1_0	(1 << 0)
+#define	STOMP_VERSION_1_1	(1 << 1)
+#define	STOMP_VERSION_1_2	(1 << 2)
+#define	STOMP_VERSION_ANY	(STOMP_VERSION_1_0|STOMP_VERSION_1_1|STOMP_VERSION_1_2)
+
 enum stomp_server_command {
 	SERVER_CONNECTED,
 	SERVER_MESSAGE,
@@ -44,7 +49,9 @@ struct stomp_connection {
 
 	short			  port;
 
-	int			  version;
+	/* Version(s) requested & negotiated */
+	int			  version_req;
+	int			  version_neg;
 
 	char			 *vhost;
 
@@ -73,8 +80,11 @@ struct stomp_connection {
 	struct stomp_frame	  frame;
 
 	/* Callbacks */
-	void			(*connectcb)(struct stomp_connection *c);
-	void			(*readcb)(struct stomp_connection *c, struct stomp_frame *f);
+	struct {
+		void	(*cb)(struct stomp_connection *,
+			    struct stomp_frame *, void *);
+		void	 *arg;
+	}			  callback[SERVER_MAX_COMMAND];
 
 	/* Heartbeat support */
 	int			  cx;
@@ -85,21 +95,32 @@ struct stomp_connection {
 	struct timeval		  timeout_tv;
 
 	/* Subscriptions */
-	int			  subscription_id;
+	unsigned long long	  subscription_id;
 	TAILQ_HEAD(stomp_subscriptions, stomp_subscription)	 subscriptions;
 
 	/* Transactions */
-	int			  transaction_id;
+	unsigned long long	  transaction_id;
 	TAILQ_HEAD(stomp_transactions, stomp_transaction)	 transactions;
+
+	/* Receipts */
+	unsigned long long	  receipt_id;
 };
 
 void				 stomp_init(struct event_base *);
-struct stomp_connection		*stomp_connect(char *, short, int, char *,
-				    SSL_CTX *, struct timeval, int, int,
-				    void (*connect_cb)(struct stomp_connection *),
-				    void (*read_cb)(struct stomp_connection *, struct stomp_frame *));
+struct stomp_connection		*stomp_connection_new(char *, short, int,
+				    char *, SSL_CTX *, struct timeval, int,
+				    int);
+void				 stomp_connection_setcb(struct stomp_connection *,
+				    enum stomp_server_command,
+				    void (*callback)(struct stomp_connection *,
+				    struct stomp_frame *, void *), void *);
+void				 stomp_connect(struct stomp_connection *);
+void				 stomp_connection_free(struct stomp_connection *);
+void				 stomp_send(struct stomp_connection *);
 struct stomp_subscription	*stomp_subscribe(struct stomp_connection *,
 				    char *);
+void				 stomp_unsubscribe(struct stomp_connection *,
+				    struct stomp_subscription *);
 struct stomp_transaction	*stomp_begin(struct stomp_connection *);
 void				 stomp_commit(struct stomp_connection *,
 				    struct stomp_transaction *);
@@ -109,5 +130,6 @@ void				 stomp_ack(struct stomp_connection *, char *,
 				    struct stomp_transaction *);
 void				 stomp_nack(struct stomp_connection *, char *,
 				    struct stomp_transaction *);
+void				 stomp_disconnect(struct stomp_connection *);
 
 #endif /* _STOMP_H */

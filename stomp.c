@@ -16,16 +16,25 @@
 
 #include "stomp.h"
 
-#define	STOMP_VERSION_1_0		(1 << 0)
-#define	STOMP_VERSION_1_1		(1 << 1)
-#define	STOMP_VERSION_1_2		(1 << 2)
-#define	STOMP_VERSION_ANY		(STOMP_VERSION_1_0|STOMP_VERSION_1_1|STOMP_VERSION_1_2)
-
 #define	STOMP_ACK_AUTO			0
 #define	STOMP_ACK_CLIENT		1
 #define	STOMP_ACK_CLIENT_INDIVIDUAL	2
 
-char *stomp_server_commands[SERVER_MAX_COMMAND] = {
+void	  stomp_connected(struct stomp_connection *, struct stomp_frame *);
+void	  stomp_message(struct stomp_connection *, struct stomp_frame *);
+void	  stomp_receipt(struct stomp_connection *, struct stomp_frame *);
+void	  stomp_error(struct stomp_connection *, struct stomp_frame *);
+
+/* Server frame dispatch table */
+void	(*stomp_server_dispatch[SERVER_MAX_COMMAND])(struct stomp_connection *,
+	    struct stomp_frame *) = {
+	stomp_connected,
+	stomp_message,
+	stomp_receipt,
+	stomp_error
+};
+
+char	 *stomp_server_commands[SERVER_MAX_COMMAND] = {
 	"CONNECTED",
 	"MESSAGE",
 	"RECEIPT",
@@ -65,15 +74,10 @@ struct event_base	*base;
 
 struct stomp_transaction	*transaction;
 
-struct stomp_header
-*stomp_header_new(void)
+struct stomp_header *
+stomp_header_new(void)
 {
-	struct stomp_header	*header;
-
-	if ((header = calloc(1, sizeof(struct stomp_header))) != NULL) {
-	}
-
-	return (header);
+	return (calloc(1, sizeof(struct stomp_header)));
 }
 
 void
@@ -100,8 +104,6 @@ stomp_timeout(int fd, short event, void *arg)
 {
 	struct stomp_connection	*connection = (struct stomp_connection *)arg;
 
-	fprintf(stderr, "Timeout\n");
-
 	/* Cancel pending heartbeat */
 	if (evtimer_pending(connection->heartbeat_ev, NULL))
 		evtimer_del(connection->heartbeat_ev);
@@ -110,7 +112,7 @@ stomp_timeout(int fd, short event, void *arg)
 	/* FIXME Need more free()'s here */
 	if (connection->frame.body)
 		free(connection->frame.body);
-	free(connection);
+	//free(connection);
 }
 
 void
@@ -118,15 +120,14 @@ stomp_heartbeat(int fd, short event, void *arg)
 {
 	struct stomp_connection	*connection = (struct stomp_connection *)arg;
 
-	fprintf(stderr, "Sending heartbeat\n");
 	evbuffer_add_printf(bufferevent_get_output(connection->bev), "\r\n");
 
 	/* Schedule next keepalive */
 	evtimer_add(connection->heartbeat_ev, &connection->heartbeat_tv);
 }
 
-struct stomp_header
-*stomp_header_find(struct stomp_headers *headers, char *name)
+struct stomp_header *
+stomp_header_find(struct stomp_headers *headers, char *name)
 {
 	struct stomp_header	*header = NULL;
 
@@ -147,87 +148,10 @@ stomp_frame_publish(struct stomp_connection *connection,
 {
 	struct stomp_header	*header;
 
-	fprintf(stderr, ">>> Frame -> %s\n", stomp_client_commands[frame->command]);
-
-	for (header = TAILQ_FIRST(&frame->headers); header;
-	    header = TAILQ_NEXT(header, entry))
-		fprintf(stderr, ">>> Header -> %s = %s\n", header->name,
-		    header->value);
-
-	/* Dependent on negotiated version, check required headers, etc. */
-	switch (frame->command) {
-	case CLIENT_SEND:
-		break;
-	case CLIENT_SUBSCRIBE:
-		if ((header = stomp_header_find(&frame->headers,
-		    "id")) == NULL) {
-			fprintf(stderr, "No id header\n");
-			return;
-		}
-		if ((header = stomp_header_find(&frame->headers,
-		    "destination")) == NULL) {
-			fprintf(stderr, "No destination header\n");
-			return;
-		}
-		break;
-	case CLIENT_UNSUBSCRIBE:
-		break;
-	case CLIENT_BEGIN:
-		/* FALLTHROUGH */
-	case CLIENT_COMMIT:
-		/* FALLTHROUGH */
-	case CLIENT_ABORT:
-		if ((header = stomp_header_find(&frame->headers,
-		    "transaction")) == NULL) {
-		}
-		break;
-	case CLIENT_ACK:
-		/* FALLTHROUGH */
-	case CLIENT_NACK:
-		switch (connection->version) {
-		case STOMP_VERSION_1_1:
-			if ((header = stomp_header_find(&frame->headers,
-			    "subscription")) == NULL) {
-			}
-			if ((header = stomp_header_find(&frame->headers,
-			    "message-id")) == NULL) {
-			}
-			break;
-		case STOMP_VERSION_1_2:
-			if ((header = stomp_header_find(&frame->headers,
-			    "id")) == NULL) {
-			}
-			break;
-		}
-		break;
-	case CLIENT_DISCONNECT:
-		break;
-	case CLIENT_CONNECT:
-		/* FALLTHROUGH */
-	case CLIENT_STOMP:
-		if ((header = stomp_header_find(&frame->headers,
-		    "accept-version")) == NULL) {
-			fprintf(stderr, "No accept-version header\n");
-			return;
-		}
-		if ((header = stomp_header_find(&frame->headers,
-		    "host")) == NULL) {
-			fprintf(stderr, "No host header\n");
-			return;
-		}
-		break;
-	default:
-		fprintf(stderr, "Unknown client command\n");
-		return;
-		/* NOT REACHED */
-		break;
-	}
-
+	/* Disable any pending heartbeat as we're about to send some data */
 	if (connection->heartbeat_ev &&
 	    evtimer_pending(connection->heartbeat_ev, NULL))
 		evtimer_del(connection->heartbeat_ev);
-
-	/* Publish frame */
 
 	/* Send command */
 	evbuffer_add_printf(bufferevent_get_output(connection->bev),
@@ -247,11 +171,12 @@ stomp_frame_publish(struct stomp_connection *connection,
 
 	/* Send NUL */
 	evbuffer_add_printf(bufferevent_get_output(connection->bev),
-	    "%c\r\n", '\0');
+	    "%c", '\0');
 
 	/* Track frame Tx */
 	connection->frames_tx++;
 
+	/* Set up a pending heartbeat if we're configured to send one */
 	if (connection->heartbeat_ev)
 		evtimer_add(connection->heartbeat_ev,
 		    &connection->heartbeat_tv);
@@ -261,96 +186,15 @@ void
 stomp_frame_receive(struct stomp_connection *connection,
     struct stomp_frame *frame)
 {
-	struct stomp_header	*header;
-
-	/* Receive frame */
-	fprintf(stderr, "<<< Frame -> %s\n", stomp_server_commands[frame->command]);
-
-	for (header = TAILQ_FIRST(&frame->headers); header;
-	    header = TAILQ_NEXT(header, entry))
-		fprintf(stderr, "<<< Header -> %s = %s\n", header->name,
-		    header->value);
-
-	/* Dependent on negotiated version, check required headers, etc. */
-	switch (frame->command) {
-	case SERVER_CONNECTED:
-		if ((header = stomp_header_find(&frame->headers,
-		    "version")) != NULL) {
-			if (!strcmp(header->value, "1.2")) {
-				connection->version = STOMP_VERSION_1_2;
-			} else if (!strcmp(header->value, "1.1")) {
-				connection->version = STOMP_VERSION_1_1;
-			} else if (!strcmp(header->value, "1.0")) {
-				connection->version = STOMP_VERSION_1_0;
-			} else {
-				fprintf(stderr, "Invalid version header\n");
-				/* FIXME handle error */
-			}
-		}
-		if ((header = stomp_header_find(&frame->headers,
-		    "heart-beat")) != NULL) {
-			int	 sx, sy;
-
-			if (sscanf(header->value, "%u,%u", &sx, &sy) != 2) {
-				fprintf(stderr, "Invalid heartbeat header\n");
-				/* FIXME handle error */
-			}
-
-			/* If client is willing to send heartbeats and server
-			 * would like them, set up timer to try and send
-			 * heartbeats every <n> milliseconds, reset any time
-			 * we send a frame
-			 */
-			if (connection->cx && sy) {
-				connection->heartbeat_ev = evtimer_new(base,
-				    stomp_heartbeat, (void *)connection);
-				connection->heartbeat_tv.tv_sec =
-				    MAX(connection->cx, sy) / 1000;
-				connection->heartbeat_tv.tv_usec =
-				    (MAX(connection->cx, sy) % 1000) * 1000;
-				evtimer_add(connection->heartbeat_ev,
-				    &connection->heartbeat_tv);
-			}
-
-			/* If server is willing to send heartbeats and client
-			 * would like them, set up a timeout to fire after
-			 * <n>*2 milliseconds without any traffic
-			 */
-			if (sx && connection->cy) {
-				connection->timeout_ev = evtimer_new(base,
-				    stomp_timeout, (void *)connection);
-				connection->timeout_tv.tv_sec =
-				    (MAX(sx, connection->cy) << 1) / 1000;
-				connection->timeout_tv.tv_usec =
-				    ((MAX(sx, connection->cy) << 1) % 1000) *
-				    1000;
-				evtimer_add(connection->timeout_ev,
-				    &connection->timeout_tv);
-			}
-		}
-		if (connection->connectcb)
-			connection->connectcb(connection);
-		break;
-	case SERVER_MESSAGE:
-		if (connection->readcb)
-			connection->readcb(connection, &connection->frame);
-		break;
-	case SERVER_RECEIPT:
-	case SERVER_ERROR:
-		fprintf(stderr, "Error -> %s", frame->body);
-		break;
-	default:
-		break;
+	if (frame->command < SERVER_MAX_COMMAND) {
+		stomp_server_dispatch[frame->command](connection, frame);
+		if (connection->callback[frame->command].cb)
+			connection->callback[frame->command].cb(connection,
+			    frame, connection->callback[frame->command].arg);
 	}
 
 	/* Track frame Rx */
 	connection->frames_rx++;
-
-#if 0
-	/* Call user-defined callback */
-	if (connection->readcb)
-		connection->readcb(&connection->frame);
-#endif
 }
 
 void
@@ -392,8 +236,7 @@ stomp_read(struct bufferevent *bev, void *arg)
 				connection->frame.command = i;
 				evbuffer_drain(input, p.pos);
 				connection->state = STOMP_FRAME_HEADERS;
-			} else
-				fprintf(stderr, "Received keepalive\n");
+			} // else heartbeat
 			evbuffer_drain(input, n);
 			break;
 		case STOMP_FRAME_HEADERS: /* Zero or more headers */
@@ -438,12 +281,13 @@ stomp_read(struct bufferevent *bev, void *arg)
 			else
 				length = 0;
 
-#if 0
+#if defined(_EVENT_NUMERIC_VERSION) && _EVENT_NUMERIC_VERSION >= 0x02010100
 			p = evbuffer_search_eol(input, NULL, &n,
 			    EVBUFFER_EOL_NUL);
-			if (n != 1) ...
-#endif
+			//if (n != 1) ...
+#else
 			p = evbuffer_search(input, "\0", 1, NULL);
+#endif
 
 			if (p.pos < 0)
 				goto loop;
@@ -483,12 +327,8 @@ stomp_read(struct bufferevent *bev, void *arg)
 		}
 
 loop:
-	/* Track how many bytes we've received */
-	fprintf(stderr, "Bytes rx -> %lld\n", connection->bytes_rx);
-	fprintf(stderr, "Bytes tx -> %lld\n", connection->bytes_tx);
-
-	/* Reenable inactivity timeout */
-	if (connection->timeout_ev)
+	/* Reenable inactivity timeout (only if we're still connected) */
+	if (connection->bev && connection->timeout_ev)
 		evtimer_add(connection->timeout_ev, &connection->timeout_tv);
 
 	return;
@@ -504,18 +344,41 @@ eventcb(struct bufferevent *bev, short events, void *arg)
 	if (events & BEV_EVENT_CONNECTED) {
 		int	 size;
 
-		fprintf(stderr, "Connected (libevent)\n");
-
 		/* Reset backoff to immediate */
 		connection->connect_index = 0;
 
 		memset(&frame, 0, sizeof(frame));
-		frame.command = CLIENT_CONNECT;
+
+		/* If we're only willing to accept version 1.2+ use the newer
+		 * STOMP frame, otherwise use the traditional CONNECT frame
+		 */
+		if (connection->version_req &
+		    (STOMP_VERSION_1_0|STOMP_VERSION_1_1))
+			frame.command = CLIENT_CONNECT;
+		else
+			frame.command = CLIENT_STOMP;
 		TAILQ_INIT(&frame.headers);
 
 		header = calloc(1, sizeof(struct stomp_header));
 		header->name = strdup("accept-version");
-		header->value = strdup("1.2");
+		/* 'x.y' + (',x.y')* + '\0' */
+		header->value = calloc(__builtin_popcount(connection->version_req) << 2, sizeof(char));
+		if (connection->version_req & STOMP_VERSION_1_0)
+			strcpy(header->value, "1.0");
+		if (connection->version_req & STOMP_VERSION_1_1) {
+			if (strlen(header->value))
+				strcpy(header->value + strlen(header->value),
+				    ",1.1");
+			else
+				strcpy(header->value, "1.1");
+		}
+		if (connection->version_req & STOMP_VERSION_1_2) {
+			if (strlen(header->value))
+				strcpy(header->value + strlen(header->value),
+				    ",1.2");
+			else
+				strcpy(header->value, "1.2");
+		}
 		TAILQ_INSERT_TAIL(&frame.headers, header, entry);
 
 		header = calloc(1, sizeof(struct stomp_header));
@@ -593,8 +456,8 @@ stomp_send(struct stomp_connection *connection)
 	connection->messages_tx++;
 }
 
-struct stomp_subscription
-*stomp_subscribe(struct stomp_connection *connection, char *destination)
+struct stomp_subscription *
+stomp_subscribe(struct stomp_connection *connection, char *destination)
 {
 	struct stomp_frame		 frame;
 	struct stomp_header		*header;
@@ -607,9 +470,9 @@ struct stomp_subscription
 
 	header = calloc(1, sizeof(struct stomp_header));
 	header->name = strdup("id");
-	size = snprintf(NULL, 0, "%d", connection->subscription_id);
+	size = snprintf(NULL, 0, "%lld", connection->subscription_id);
 	header->value = calloc(size + 1, sizeof(char));
-	sprintf(header->value, "%d", connection->subscription_id++);
+	sprintf(header->value, "%lld", connection->subscription_id++);
 	TAILQ_INSERT_TAIL(&frame.headers, header, entry);
 
 	header = calloc(1, sizeof(struct stomp_header));
@@ -636,8 +499,8 @@ stomp_unsubscribe(struct stomp_connection *connection,
 {
 }
 
-struct stomp_transaction
-*stomp_begin(struct stomp_connection *connection)
+struct stomp_transaction *
+stomp_begin(struct stomp_connection *connection)
 {
 	struct stomp_frame		 frame;
 	struct stomp_header		*header;
@@ -649,9 +512,9 @@ struct stomp_transaction
 	TAILQ_INIT(&frame.headers);
 
 	transaction = calloc(1, sizeof(struct stomp_transaction));
-	size = snprintf(NULL, 0, "tx%d", connection->transaction_id);
+	size = snprintf(NULL, 0, "tx%lld", connection->transaction_id);
 	transaction->id = calloc(size + 1, sizeof(char));
-	sprintf(transaction->id, "tx%d", connection->transaction_id++);
+	sprintf(transaction->id, "tx%lld", connection->transaction_id++);
 
 	header = calloc(1, sizeof(struct stomp_header));
 	header->name = strdup("transaction");
@@ -781,6 +644,36 @@ stomp_nack(struct stomp_connection *connection, char *ack,
 void
 stomp_disconnect(struct stomp_connection *connection)
 {
+	struct stomp_frame	 frame;
+	//struct stomp_header	*header;
+
+	memset(&frame, 0, sizeof(frame));
+	frame.command = CLIENT_DISCONNECT;
+	TAILQ_INIT(&frame.headers);
+
+#if 0
+	header = calloc(1, sizeof(struct stomp_header));
+	header->name = strdup("receipt");
+	header->value = strdup("77");
+	TAILQ_INSERT_TAIL(&frame.headers, header, entry);
+#endif
+
+	stomp_frame_publish(connection, &frame);
+
+	/* Clear down headers */
+	stomp_headers_destroy(&frame.headers);
+  
+	bufferevent_free(connection->bev);
+	/* FIXME */
+	connection->bev = NULL;
+
+	/* Stop sending heartbeats */
+	if (connection->heartbeat_ev &&
+	    evtimer_pending(connection->heartbeat_ev, NULL))
+		evtimer_del(connection->heartbeat_ev);
+	if (connection->timeout_ev &&
+	    evtimer_pending(connection->timeout_ev, NULL))
+		evtimer_del(connection->timeout_ev);
 }
 
 void
@@ -788,8 +681,6 @@ stomp_reconnect(int fd, short event, void *arg)
 {
 	struct stomp_connection	*connection = (struct stomp_connection *)arg;
 	struct sockaddr_in	 sin;
-
-	fprintf(stderr, "Connection attempt\n");
 
 	memset(&sin, 0, sizeof(sin));
 	sin.sin_family = AF_INET;
@@ -833,65 +724,128 @@ stomp_reconnect(int fd, short event, void *arg)
 	    (void *)connection);
 }
 
-struct stomp_connection
-*stomp_connection_new(void)
+struct stomp_connection *
+stomp_connection_new(char *host, short port, int version, char *vhost,
+    SSL_CTX *ctx, struct timeval tv, int cx, int cy)
 {
 	struct stomp_connection	*connection;
 
 	if ((connection = calloc(1, sizeof(struct stomp_connection))) != NULL) {
+		/* Set initial state */
 		connection->state = STOMP_FRAME_OR_KEEPALIVE;
+
+		/* Set up timer to (re)connect */
 		connection->connect_ev = evtimer_new(base, stomp_reconnect,
 		    (void *)connection);
+		connection->connect_tv[1] = tv;
+
 		TAILQ_INIT(&connection->frame.headers);
 		TAILQ_INIT(&connection->subscriptions);
 		TAILQ_INIT(&connection->transactions);
+
+		/* TCP port */
+		connection->port = port;
+
+		/* Requested version(s) */
+		connection->version_req = version;
+
+		/* vhost */
+		connection->vhost = strdup(vhost);
+
+		/* SSL */
+		connection->ctx = ctx;
+
+		/* Desired heartbeat rates */
+		connection->cx = cx;
+		connection->cy = cy;
 	}
 
 	return (connection);
 }
 
-struct stomp_connection
-*stomp_connect(char *host, short port, int version, char *vhost, SSL_CTX *ctx,
-    struct timeval tv, int cx, int cy,
-    void (*connect_cb)(struct stomp_connection *c),
-    void (*read_cb)(struct stomp_connection *c, struct stomp_frame *f))
+void
+stomp_connection_setcb(struct stomp_connection *connection,
+    enum stomp_server_command command,
+    void (*callback)(struct stomp_connection *, struct stomp_frame *, void *),
+    void *arg)
 {
-	struct stomp_connection	*connection;
+	if (command < SERVER_MAX_COMMAND) {
+		connection->callback[command].cb = callback;
+		connection->callback[command].arg = arg;
+	}
+}
 
-	if ((connection = stomp_connection_new()) == NULL)
-		return (NULL);
+void
+stomp_connect(struct stomp_connection *connection)
+{
+	evtimer_add(connection->connect_ev, &connection->connect_tv[0]);
+	connection->connect_index = 1;
+}
 
-	/* Set up timer to (re)connect */
-	connection->connect_tv[1] = tv;
-	evtimer_add(connection->connect_ev,
-	    &connection->connect_tv[connection->connect_index]);
-	connection->connect_index++;
-
-	/* TCP port */
-	connection->port = port;
-
-	/* Desired version */
-	connection->version = version;
-
-	/* vhost */
-	connection->vhost = strdup(vhost);
-
-	/* SSL */
-	connection->ctx = ctx;
-
-	/* Desired heartbeat rates */
-	connection->cx = cx;
-	connection->cy = cy;
-
-	connection->connectcb = connect_cb;
-	connection->readcb = read_cb;
-
-	return (connection);
+void
+stomp_connection_free(struct stomp_connection *connection)
+{
+	free(connection);
 }
 
 void
 stomp_connected(struct stomp_connection *connection, struct stomp_frame *frame)
 {
+	struct stomp_header	*header;
+	int			 sx, sy;
+
+	if ((header = stomp_header_find(&frame->headers,
+	    "version")) != NULL) {
+		if (!strcmp(header->value, "1.2")) {
+			connection->version_neg = STOMP_VERSION_1_2;
+		} else if (!strcmp(header->value, "1.1")) {
+			connection->version_neg = STOMP_VERSION_1_1;
+		} else if (!strcmp(header->value, "1.0")) {
+			connection->version_neg = STOMP_VERSION_1_0;
+		} else {
+			fprintf(stderr, "Invalid version header\n");
+			/* FIXME handle error */
+		}
+	}
+	if ((header = stomp_header_find(&frame->headers,
+	    "heart-beat")) != NULL) {
+		if (sscanf(header->value, "%u,%u", &sx, &sy) != 2) {
+			fprintf(stderr, "Invalid heartbeat header\n");
+			/* FIXME handle error */
+		}
+
+		/* If client is willing to send heartbeats and server
+		 * would like them, set up timer to try and send
+		 * heartbeats every <n> milliseconds, reset any time
+		 * we send a frame
+		 */
+		if (connection->cx && sy) {
+			connection->heartbeat_ev = evtimer_new(base,
+			    stomp_heartbeat, (void *)connection);
+			connection->heartbeat_tv.tv_sec =
+			    MAX(connection->cx, sy) / 1000;
+			connection->heartbeat_tv.tv_usec =
+			    (MAX(connection->cx, sy) % 1000) * 1000;
+			evtimer_add(connection->heartbeat_ev,
+			    &connection->heartbeat_tv);
+		}
+
+		/* If server is willing to send heartbeats and client
+		 * would like them, set up a timeout to fire after
+		 * <n>*2 milliseconds without any traffic
+		 */
+		if (sx && connection->cy) {
+			connection->timeout_ev = evtimer_new(base,
+			    stomp_timeout, (void *)connection);
+			connection->timeout_tv.tv_sec =
+			    (MAX(sx, connection->cy) << 1) / 1000;
+			connection->timeout_tv.tv_usec =
+			    ((MAX(sx, connection->cy) << 1) % 1000) *
+			    1000;
+			evtimer_add(connection->timeout_ev,
+			    &connection->timeout_tv);
+		}
+	}
 }
 
 void
@@ -909,19 +863,24 @@ stomp_receipt(struct stomp_connection *connection, struct stomp_frame *frame)
 void
 stomp_error(struct stomp_connection *connection, struct stomp_frame *frame)
 {
+	fprintf(stderr, "Error -> %s", frame->body);
 }
 
 void
-test_connect_cb(struct stomp_connection *connection)
+test_connect_cb(struct stomp_connection *connection, struct stomp_frame *frame,
+    void *arg)
 {
-	fprintf(stderr, "Connected (STOMP)\n");
+	struct stomp_header	*header;
+
+	if ((header = stomp_header_find(&frame->headers, "server")) != NULL)
+		fprintf(stderr, "Server: %s\n", header->value);
 	stomp_subscribe(connection, "/queue/foo");
-	transaction = stomp_begin(connection);
+	//transaction = stomp_begin(connection);
 	//stomp_subscribe(connection, "/exchange/foo/bar");
 }
 
 void
-test_read_cb(struct stomp_connection *connection, struct stomp_frame *frame)
+test_message_cb(struct stomp_connection *connection, struct stomp_frame *frame, void *arg)
 {
 	struct stomp_header	*header;
 	static int		 count = 0;
@@ -932,18 +891,18 @@ test_read_cb(struct stomp_connection *connection, struct stomp_frame *frame)
 		fprintf(stderr, "Frame body -> %s\n", frame->body);
 	count++;
 	if ((header = stomp_header_find(&frame->headers, "ack")) != NULL) {
-		stomp_ack(connection, header->value, transaction);
+		stomp_ack(connection, header->value, NULL);
+		//stomp_ack(connection, header->value, transaction);
 		//stomp_nack(connection, header->value, transaction);
 	}
 	/* After receiving three messages, commit or abort the transaction */
 	if (count == 3) {
 		//stomp_abort(connection, transaction);
-		stomp_commit(connection, transaction);
-		//stomp_disconnect(connection);
+		//stomp_commit(connection, transaction);
+		stomp_disconnect(connection);
 		count = 0;
-		transaction = stomp_begin(connection);
+		//transaction = stomp_begin(connection);
 	}
-		
 }
 
 int
@@ -952,6 +911,7 @@ main(int argc, char *argv[])
 	struct event_base	*b;
 	SSL_CTX			*ctx;
 	struct timeval		 tv = { 10, 0 };	/* 10 seconds */
+	struct stomp_connection	*ca, *cb;
 
 	SSL_load_error_strings();
 	SSL_library_init();
@@ -965,9 +925,23 @@ main(int argc, char *argv[])
 
 	stomp_init(b);
 
-	if (stomp_connect("192.168.255.128", 61614, STOMP_VERSION_ANY, "/",
-	    ctx, tv, 1000, 1000, test_connect_cb, test_read_cb) == NULL)
+	if ((ca = stomp_connection_new("192.168.255.128", 61613,
+	    STOMP_VERSION_ANY, "/", NULL, tv, 1000, 1000)) == NULL)
 		return (-1);
+
+	stomp_connection_setcb(ca, SERVER_CONNECTED, test_connect_cb, NULL);
+	stomp_connection_setcb(ca, SERVER_MESSAGE, test_message_cb, NULL);
+
+	stomp_connect(ca);
+
+	if ((cb = stomp_connection_new("192.168.255.128", 61614,
+	    STOMP_VERSION_1_2, "/", ctx, tv, 1000, 1000)) == NULL)
+		return (-1);
+
+	stomp_connection_setcb(cb, SERVER_CONNECTED, test_connect_cb, NULL);
+	stomp_connection_setcb(cb, SERVER_MESSAGE, test_message_cb, NULL);
+
+	stomp_connect(cb);
 
 	event_base_dispatch(b);
 
