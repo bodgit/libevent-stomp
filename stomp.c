@@ -22,13 +22,13 @@
 #define	STOMP_ACK_CLIENT		1
 #define	STOMP_ACK_CLIENT_INDIVIDUAL	2
 
-void	  stomp_connected(struct stomp_connection *, struct stomp_frame *);
-void	  stomp_message(struct stomp_connection *, struct stomp_frame *);
-void	  stomp_receipt(struct stomp_connection *, struct stomp_frame *);
-void	  stomp_error(struct stomp_connection *, struct stomp_frame *);
+int	  stomp_connected(struct stomp_connection *, struct stomp_frame *);
+int	  stomp_message(struct stomp_connection *, struct stomp_frame *);
+int	  stomp_receipt(struct stomp_connection *, struct stomp_frame *);
+int	  stomp_error(struct stomp_connection *, struct stomp_frame *);
 
 /* Server frame dispatch table */
-void	(*stomp_server_dispatch[SERVER_MAX_COMMAND])(struct stomp_connection *,
+int	(*stomp_server_dispatch[SERVER_MAX_COMMAND])(struct stomp_connection *,
 	    struct stomp_frame *) = {
 	stomp_connected,
 	stomp_message,
@@ -203,7 +203,9 @@ stomp_frame_receive(struct stomp_connection *connection,
     struct stomp_frame *frame)
 {
 	if (frame->command < SERVER_MAX_COMMAND) {
-		stomp_server_dispatch[frame->command](connection, frame);
+		if (stomp_server_dispatch[frame->command](connection,
+		    frame) < 0)
+			return;
 		if (connection->callback[frame->command].cb)
 			connection->callback[frame->command].cb(connection,
 			    frame, connection->callback[frame->command].arg);
@@ -839,7 +841,7 @@ stomp_connection_free(struct stomp_connection *connection)
 	free(connection);
 }
 
-void
+int
 stomp_connected(struct stomp_connection *connection, struct stomp_frame *frame)
 {
 	struct stomp_header	*header;
@@ -854,13 +856,13 @@ stomp_connected(struct stomp_connection *connection, struct stomp_frame *frame)
 			connection->version_neg = STOMP_VERSION_1_0;
 		} else {
 			fprintf(stderr, "Invalid version header\n");
-			/* FIXME handle error */
+			return (-1);
 		}
 	}
 	if ((header = stomp_frame_header_find(frame, "heart-beat")) != NULL) {
 		if (sscanf(header->value, "%u,%u", &sx, &sy) != 2) {
 			fprintf(stderr, "Invalid heartbeat header\n");
-			/* FIXME handle error */
+			return (-1);
 		}
 
 		/* If client is willing to send heartbeats and server
@@ -895,37 +897,42 @@ stomp_connected(struct stomp_connection *connection, struct stomp_frame *frame)
 			    &connection->timeout_tv);
 		}
 	}
+
+	return (0);
 }
 
-void
+int
 stomp_message(struct stomp_connection *connection, struct stomp_frame *frame)
 {
 	struct stomp_header		*header;
 	struct stomp_subscription	*subscription;
 
 	if ((header = stomp_frame_header_find(frame, "destination")) == NULL)
-		return;
+		return (-1);
 	if ((header = stomp_frame_header_find(frame, "message-id")) == NULL)
-		return;
+		return (-1);
 	if ((header = stomp_frame_header_find(frame, "subscription")) == NULL)
-		return;
+		return (-1);
 	if ((subscription = stomp_subscription_find(connection,
 	    header->value)) == NULL)
-		return;
+		return (-1);
 	if (subscription->ack != STOMP_ACK_AUTO)
 		if ((header = stomp_frame_header_find(frame, "ack")) == NULL)
-			return;
+			return (-1);
 
 	/* Track message Rx */
 	connection->messages_rx++;
+
+	return (0);
 }
 
-void
+int
 stomp_receipt(struct stomp_connection *connection, struct stomp_frame *frame)
 {
+	return (0);
 }
 
-void
+int
 stomp_error(struct stomp_connection *connection, struct stomp_frame *frame)
 {
 	fprintf(stderr, "Error -> %s", frame->body);
@@ -935,6 +942,8 @@ stomp_error(struct stomp_connection *connection, struct stomp_frame *frame)
 	/* Schedule a reconnect attempt */
 	evtimer_add(connection->connect_ev,
 	    &connection->connect_tv[connection->connect_index]);
+
+	return (0);
 }
 
 void
