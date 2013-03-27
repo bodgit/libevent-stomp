@@ -20,7 +20,7 @@ Example usage:
     {
             struct stomp_header *header;
 
-            if ((header = stomp_header_find(&frame->headers, "server")) != NULL)
+            if ((header = stomp_frame_header_find(frame, "server")) != NULL)
                     printf("Connected to %s\n", header->value);
     
             stomp_subscribe(connection, "/queue/test");
