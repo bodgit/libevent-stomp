@@ -640,7 +640,8 @@ stomp_abort(struct stomp_connection *connection,
 }
 
 void
-stomp_ack(struct stomp_connection *connection, char *ack,
+stomp_ack(struct stomp_connection *connection,
+    struct stomp_subscription *subscription, char *ack,
     struct stomp_transaction *transaction)
 {
 	struct stomp_frame	 frame;
@@ -650,10 +651,41 @@ stomp_ack(struct stomp_connection *connection, char *ack,
 	frame.command = CLIENT_ACK;
 	TAILQ_INIT(&frame.headers);
 
-	header = calloc(1, sizeof(struct stomp_header));
-	header->name = strdup("id");
-	header->value = strdup(ack);
-	TAILQ_INSERT_TAIL(&frame.headers, header, entry);
+	/* Note the order here!
+	 *
+	 * - STOMP 1.0 sends just the "message-id" header set to the value of
+	 *   the same named header from the to-be-acknowledged message.
+	 * - STOMP 1.1 sends in addition to the above the "subscription" header
+	 *   set to the value of the subscription id.
+	 * - STOMP 1.2 throws all of that away and uses a dedicated "id"
+	 *   header set to the value of the "ack" header from the 
+	 *   to-be-acknowledged message.
+	 *
+	 * All versions of the specification can pass an optional transaction
+	 * header
+	 */
+	switch (connection->version_neg) {
+	case STOMP_VERSION_1_1:
+		header = calloc(1, sizeof(struct stomp_header));
+		header->name = strdup("subscription");
+		header->value = strdup(subscription->id);
+		TAILQ_INSERT_TAIL(&frame.headers, header, entry);
+		/* FALLTHROUGH */
+	case STOMP_VERSION_1_0:
+		header = calloc(1, sizeof(struct stomp_header));
+		header->name = strdup("message-id");
+		header->value = strdup(ack);
+		TAILQ_INSERT_TAIL(&frame.headers, header, entry);
+		break;
+	case STOMP_VERSION_1_2:
+		/* FALLTHROUGH */
+	default:
+		header = calloc(1, sizeof(struct stomp_header));
+		header->name = strdup("id");
+		header->value = strdup(ack);
+		TAILQ_INSERT_TAIL(&frame.headers, header, entry);
+		break;
+	}
 
 	if (transaction) {
 		header = calloc(1, sizeof(struct stomp_header));
@@ -669,7 +701,8 @@ stomp_ack(struct stomp_connection *connection, char *ack,
 }
 
 void
-stomp_nack(struct stomp_connection *connection, char *ack,
+stomp_nack(struct stomp_connection *connection,
+    struct stomp_subscription *subscription, char *ack,
     struct stomp_transaction *transaction)
 {
 	struct stomp_frame	 frame;
@@ -679,10 +712,33 @@ stomp_nack(struct stomp_connection *connection, char *ack,
 	frame.command = CLIENT_NACK;
 	TAILQ_INIT(&frame.headers);
 
-	header = calloc(1, sizeof(struct stomp_header));
-	header->name = strdup("id");
-	header->value = strdup(ack);
-	TAILQ_INSERT_TAIL(&frame.headers, header, entry);
+	/* See the notes in stomp_ack() above, only difference is this frame
+	 * isn't in the STOMP 1.0 specification so it's currently a no-op.
+	 */
+	switch (connection->version_neg) {
+	case STOMP_VERSION_1_0:
+		return;
+		/* NOTREACHED */
+	case STOMP_VERSION_1_1:
+		header = calloc(1, sizeof(struct stomp_header));
+		header->name = strdup("message-id");
+		header->value = strdup(ack);
+		TAILQ_INSERT_TAIL(&frame.headers, header, entry);
+
+		header = calloc(1, sizeof(struct stomp_header));
+		header->name = strdup("subscription");
+		header->value = strdup(subscription->id);
+		TAILQ_INSERT_TAIL(&frame.headers, header, entry);
+		break;
+	case STOMP_VERSION_1_2:
+		/* FALLTHROUGH */
+	default:
+		header = calloc(1, sizeof(struct stomp_header));
+		header->name = strdup("id");
+		header->value = strdup(ack);
+		TAILQ_INSERT_TAIL(&frame.headers, header, entry);
+		break;
+	}
 
 	if (transaction) {
 		header = calloc(1, sizeof(struct stomp_header));
@@ -970,8 +1026,9 @@ test_message_cb(struct stomp_connection *connection, struct stomp_frame *frame, 
 	if (frame->body)
 		fprintf(stderr, "Frame body -> %s\n", frame->body);
 	count++;
-	if ((header = stomp_frame_header_find(frame, "ack")) != NULL) {
-		stomp_ack(connection, header->value, NULL);
+	if (((header = stomp_frame_header_find(frame, "ack")) != NULL) ||
+	    ((header = stomp_frame_header_find(frame, "message-id")) != NULL)) {
+		stomp_ack(connection, NULL, header->value, NULL);
 		//stomp_ack(connection, header->value, transaction);
 		//stomp_nack(connection, header->value, transaction);
 	}

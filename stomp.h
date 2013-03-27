@@ -132,9 +132,11 @@ void				 stomp_commit(struct stomp_connection *,
 				    struct stomp_transaction *);
 void				 stomp_abort(struct stomp_connection *,
 				    struct stomp_transaction *);
-void				 stomp_ack(struct stomp_connection *, char *,
+void				 stomp_ack(struct stomp_connection *,
+				    struct stomp_subscription *, char *,
 				    struct stomp_transaction *);
-void				 stomp_nack(struct stomp_connection *, char *,
+void				 stomp_nack(struct stomp_connection *,
+				    struct stomp_subscription *, char *,
 				    struct stomp_transaction *);
 void				 stomp_disconnect(struct stomp_connection *);
 
