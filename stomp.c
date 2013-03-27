@@ -1005,7 +1005,7 @@ main(int argc, char *argv[])
 
 	stomp_init(b, NULL);
 
-	if ((ca = stomp_connection_new("192.168.255.128", 61613,
+	if ((ca = stomp_connection_new("192.168.255.128", STOMP_DEFAULT_PORT,
 	    STOMP_VERSION_ANY, "/", NULL, tv, 1000, 1000)) == NULL)
 		return (-1);
 
@@ -1014,8 +1014,9 @@ main(int argc, char *argv[])
 
 	stomp_connect(ca);
 
-	if ((cb = stomp_connection_new("192.168.255.128", 61614,
-	    STOMP_VERSION_1_2, "/", ctx, tv, 1000, 1000)) == NULL)
+	if ((cb = stomp_connection_new("192.168.255.128",
+	    STOMP_DEFAULT_SSL_PORT, STOMP_VERSION_1_2, "/", ctx, tv, 1000,
+	    1000)) == NULL)
 		return (-1);
 
 	stomp_connection_setcb(cb, SERVER_CONNECTED, test_connect_cb, NULL);

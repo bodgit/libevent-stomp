@@ -43,7 +43,7 @@ Example usage:
             stomp_init(base, NULL);
     
             /* Pass an SSL_CTX * as argument #5 for SSL/TLS support */
-            if ((c = stomp_connection_new("192.0.2.1", 61613,
+            if ((c = stomp_connection_new("192.0.2.1", STOMP_DEFAULT_PORT,
                 STOMP_VERSION_ANY, "/", NULL, tv, 1000, 1000)) == NULL)
                     return (-1);
     

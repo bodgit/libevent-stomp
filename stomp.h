@@ -1,6 +1,9 @@
 #ifndef _STOMP_H
 #define _STOMP_H
 
+#define	STOMP_DEFAULT_PORT	(61613)
+#define	STOMP_DEFAULT_SSL_PORT	(61614)
+
 #define	STOMP_VERSION_1_0	(1 << 0)
 #define	STOMP_VERSION_1_1	(1 << 1)
 #define	STOMP_VERSION_1_2	(1 << 2)
