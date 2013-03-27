@@ -118,9 +118,10 @@ void				 stomp_connection_setcb(struct stomp_connection *,
 				    struct stomp_frame *, void *), void *);
 void				 stomp_connect(struct stomp_connection *);
 void				 stomp_connection_free(struct stomp_connection *);
-void				 stomp_send(struct stomp_connection *);
+void				 stomp_send(struct stomp_connection *,
+				    struct stomp_transaction *);
 struct stomp_subscription	*stomp_subscribe(struct stomp_connection *,
-				    char *);
+				    char *, int);
 void				 stomp_unsubscribe(struct stomp_connection *,
 				    struct stomp_subscription *);
 struct stomp_transaction	*stomp_begin(struct stomp_connection *);

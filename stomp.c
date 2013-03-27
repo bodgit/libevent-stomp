@@ -130,19 +130,32 @@ stomp_heartbeat(int fd, short event, void *arg)
 }
 
 struct stomp_header *
-stomp_header_find(struct stomp_headers *headers, char *name)
+stomp_frame_header_find(struct stomp_frame *frame, char *name)
 {
 	struct stomp_header	*header = NULL;
 
 	/* Return the first match if there are multiple headers with the same
 	 * requested name, as per the STOMP specification
 	 */
-	for (header = TAILQ_FIRST(headers); header;
+	for (header = TAILQ_FIRST(&frame->headers); header;
 	    header = TAILQ_NEXT(header, entry))
 		if (!strcmp(header->name, name))
 			break;
 
 	return (header);
+}
+
+struct stomp_subscription *
+stomp_subscription_find(struct stomp_connection *connection, char *id)
+{
+	struct stomp_subscription	*subscription = NULL;
+
+	for (subscription = TAILQ_FIRST(&connection->subscriptions);
+	    subscription; subscription = TAILQ_NEXT(subscription, entry))
+		if (!strcmp(subscription->id, id))
+			break;
+
+	return (subscription);
 }
 
 void
@@ -278,7 +291,7 @@ stomp_read(struct bufferevent *bev, void *arg)
 		case STOMP_FRAME_BODY: /* Optional frame body */
 			/* Check for a content-length header */
 			if ((header =
-			    stomp_header_find(&connection->frame.headers,
+			    stomp_frame_header_find(&connection->frame,
 			    "content-length")) != NULL)
 				length = atoi(header->value);
 			else
@@ -470,14 +483,16 @@ stomp_init(struct event_base *b, struct evdns_base *d)
 }
 
 void
-stomp_send(struct stomp_connection *connection)
+stomp_send(struct stomp_connection *connection,
+    struct stomp_transaction *transaction)
 {
 	/* Track message Tx */
 	connection->messages_tx++;
 }
 
 struct stomp_subscription *
-stomp_subscribe(struct stomp_connection *connection, char *destination)
+stomp_subscribe(struct stomp_connection *connection, char *destination,
+    int ack)
 {
 	struct stomp_frame		 frame;
 	struct stomp_header		*header;
@@ -488,11 +503,14 @@ stomp_subscribe(struct stomp_connection *connection, char *destination)
 	frame.command = CLIENT_SUBSCRIBE;
 	TAILQ_INIT(&frame.headers);
 
+	subscription = calloc(1, sizeof(struct stomp_subscription));
+	size = snprintf(NULL, 0, "%lld", connection->subscription_id);
+	subscription->id = calloc(size + 1, sizeof(char));
+	sprintf(subscription->id, "%lld", connection->subscription_id++);
+
 	header = calloc(1, sizeof(struct stomp_header));
 	header->name = strdup("id");
-	size = snprintf(NULL, 0, "%lld", connection->subscription_id);
-	header->value = calloc(size + 1, sizeof(char));
-	sprintf(header->value, "%lld", connection->subscription_id++);
+	header->value = strdup(subscription->id);
 	TAILQ_INSERT_TAIL(&frame.headers, header, entry);
 
 	header = calloc(1, sizeof(struct stomp_header));
@@ -502,13 +520,29 @@ stomp_subscribe(struct stomp_connection *connection, char *destination)
 
 	header = calloc(1, sizeof(struct stomp_header));
 	header->name = strdup("ack");
-	header->value = strdup("client-individual");
+
+	switch (ack) {
+	case STOMP_ACK_CLIENT:
+		header->value = strdup("client");
+		break;
+	case STOMP_ACK_CLIENT_INDIVIDUAL:
+		header->value = strdup("client-individual");
+		break;
+	case STOMP_ACK_AUTO:
+		/* FALLTHROUGH */
+	default:
+		header->value = strdup("auto");
+		break;
+	}
+
 	TAILQ_INSERT_TAIL(&frame.headers, header, entry);
 
 	stomp_frame_publish(connection, &frame);
 
 	/* Clear down headers */
 	stomp_headers_destroy(&frame.headers);
+
+	TAILQ_INSERT_TAIL(&connection->subscriptions, subscription, entry);
 
 	return (subscription);
 }
@@ -811,8 +845,7 @@ stomp_connected(struct stomp_connection *connection, struct stomp_frame *frame)
 	struct stomp_header	*header;
 	int			 sx, sy;
 
-	if ((header = stomp_header_find(&frame->headers,
-	    "version")) != NULL) {
+	if ((header = stomp_frame_header_find(frame, "version")) != NULL) {
 		if (!strcmp(header->value, "1.2")) {
 			connection->version_neg = STOMP_VERSION_1_2;
 		} else if (!strcmp(header->value, "1.1")) {
@@ -824,8 +857,7 @@ stomp_connected(struct stomp_connection *connection, struct stomp_frame *frame)
 			/* FIXME handle error */
 		}
 	}
-	if ((header = stomp_header_find(&frame->headers,
-	    "heart-beat")) != NULL) {
+	if ((header = stomp_frame_header_find(frame, "heart-beat")) != NULL) {
 		if (sscanf(header->value, "%u,%u", &sx, &sy) != 2) {
 			fprintf(stderr, "Invalid heartbeat header\n");
 			/* FIXME handle error */
@@ -868,6 +900,22 @@ stomp_connected(struct stomp_connection *connection, struct stomp_frame *frame)
 void
 stomp_message(struct stomp_connection *connection, struct stomp_frame *frame)
 {
+	struct stomp_header		*header;
+	struct stomp_subscription	*subscription;
+
+	if ((header = stomp_frame_header_find(frame, "destination")) == NULL)
+		return;
+	if ((header = stomp_frame_header_find(frame, "message-id")) == NULL)
+		return;
+	if ((header = stomp_frame_header_find(frame, "subscription")) == NULL)
+		return;
+	if ((subscription = stomp_subscription_find(connection,
+	    header->value)) == NULL)
+		return;
+	if (subscription->ack != STOMP_ACK_AUTO)
+		if ((header = stomp_frame_header_find(frame, "ack")) == NULL)
+			return;
+
 	/* Track message Rx */
 	connection->messages_rx++;
 }
@@ -881,6 +929,12 @@ void
 stomp_error(struct stomp_connection *connection, struct stomp_frame *frame)
 {
 	fprintf(stderr, "Error -> %s", frame->body);
+
+	bufferevent_free(connection->bev);
+
+	/* Schedule a reconnect attempt */
+	evtimer_add(connection->connect_ev,
+	    &connection->connect_tv[connection->connect_index]);
 }
 
 void
@@ -889,9 +943,9 @@ test_connect_cb(struct stomp_connection *connection, struct stomp_frame *frame,
 {
 	struct stomp_header	*header;
 
-	if ((header = stomp_header_find(&frame->headers, "server")) != NULL)
+	if ((header = stomp_frame_header_find(frame, "server")) != NULL)
 		fprintf(stderr, "Server: %s\n", header->value);
-	stomp_subscribe(connection, "/queue/foo");
+	stomp_subscribe(connection, "/queue/foo", STOMP_ACK_AUTO);
 	//transaction = stomp_begin(connection);
 	//stomp_subscribe(connection, "/exchange/foo/bar");
 }
@@ -907,7 +961,7 @@ test_message_cb(struct stomp_connection *connection, struct stomp_frame *frame, 
 	if (frame->body)
 		fprintf(stderr, "Frame body -> %s\n", frame->body);
 	count++;
-	if ((header = stomp_header_find(&frame->headers, "ack")) != NULL) {
+	if ((header = stomp_frame_header_find(frame, "ack")) != NULL) {
 		stomp_ack(connection, header->value, NULL);
 		//stomp_ack(connection, header->value, transaction);
 		//stomp_nack(connection, header->value, transaction);
