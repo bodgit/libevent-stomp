@@ -1008,6 +1008,7 @@ stomp_error(struct stomp_connection *connection, struct stomp_frame *frame)
 	return (0);
 }
 
+#if 0
 void
 test_connect_cb(struct stomp_connection *connection, struct stomp_frame *frame,
     void *arg)
@@ -1093,3 +1094,4 @@ main(int argc, char *argv[])
 
 	return (0);
 }
+#endif
