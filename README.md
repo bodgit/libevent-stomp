@@ -36,6 +36,7 @@ Example usage:
     int
     main(int argc, char *argv[])
     {
+            struct event_base *base;
             struct timeval tv = { 10, 0 };
             struct stomp_connection *c;
     
@@ -52,7 +53,7 @@ Example usage:
     
             stomp_connect(c);
     
-            event_dispatch(base);
+            event_base_dispatch(base);
     
             return (0);
     }

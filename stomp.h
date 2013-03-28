@@ -1,5 +1,28 @@
+/*
+ * Copyright (c) 2013 Matt Dainty <matt@bodgit-n-scarper.com>
+ *
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+
 #ifndef _STOMP_H
 #define _STOMP_H
+
+#include <sys/queue.h>
+
+#include <event2/event.h>
+#include <event2/dns.h>
+
+#include <openssl/ssl.h>
 
 #define	STOMP_DEFAULT_PORT	(61613)
 #define	STOMP_DEFAULT_SSL_PORT	(61614)
@@ -8,6 +31,10 @@
 #define	STOMP_VERSION_1_1	(1 << 1)
 #define	STOMP_VERSION_1_2	(1 << 2)
 #define	STOMP_VERSION_ANY	(STOMP_VERSION_1_0|STOMP_VERSION_1_1|STOMP_VERSION_1_2)
+
+#define	STOMP_ACK_AUTO			0
+#define	STOMP_ACK_CLIENT		1
+#define	STOMP_ACK_CLIENT_INDIVIDUAL	2
 
 enum stomp_server_command {
 	SERVER_CONNECTED,
@@ -110,6 +137,8 @@ struct stomp_connection {
 	unsigned long long	  receipt_id;
 };
 
+struct stomp_header		*stomp_frame_header_find(struct stomp_frame *,
+				    char *);
 void				 stomp_init(struct event_base *,
 				    struct evdns_base *);
 struct stomp_connection		*stomp_connection_new(char *, unsigned short,
