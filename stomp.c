@@ -566,6 +566,26 @@ void
 stomp_unsubscribe(struct stomp_connection *connection,
     struct stomp_subscription *subscription)
 {
+	struct stomp_frame	 frame;
+	struct stomp_header	*header;
+
+	memset(&frame, 0, sizeof(frame));
+	frame.command = CLIENT_UNSUBSCRIBE;
+	TAILQ_INIT(&frame.headers);
+
+	header = calloc(1, sizeof(struct stomp_header));
+	header->name = strdup("id");
+	header->value = strdup(subscription->id);
+	TAILQ_INSERT_TAIL(&frame.headers, header, entry);
+
+	stomp_frame_publish(connection, &frame);
+
+	/* Clear down headers */
+	stomp_headers_destroy(&frame.headers);
+
+	TAILQ_REMOVE(&connection->subscriptions, subscription, entry);
+	free(subscription->id);
+	free(subscription);
 }
 
 struct stomp_transaction *
