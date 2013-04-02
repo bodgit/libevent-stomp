@@ -444,6 +444,13 @@ eventcb(struct bufferevent *bev, short events, void *arg)
 			evtimer_del(connection->heartbeat_ev);
 		/* Tear down connection */
 		bufferevent_free(connection->bev);
+
+		if ((events & BEV_EVENT_EOF) &&
+		    connection->callback[SERVER_DISCONNECTED].cb)
+			connection->callback[SERVER_DISCONNECTED].cb(connection,
+			    NULL,
+			    connection->callback[SERVER_DISCONNECTED].arg);
+
 		/* FIXME Need more free()'s here */
 		if (connection->frame.body)
 			free(connection->frame.body);
@@ -792,6 +799,10 @@ stomp_disconnect(struct stomp_connection *connection)
 	if (connection->timeout_ev &&
 	    evtimer_pending(connection->timeout_ev, NULL))
 		evtimer_del(connection->timeout_ev);
+
+	if (connection->callback[SERVER_DISCONNECTED].cb)
+		connection->callback[SERVER_DISCONNECTED].cb(connection, NULL,
+		    connection->callback[SERVER_DISCONNECTED].arg);
 }
 
 void
@@ -884,7 +895,8 @@ stomp_connection_setcb(struct stomp_connection *connection,
     void (*callback)(struct stomp_connection *, struct stomp_frame *, void *),
     void *arg)
 {
-	if (command < SERVER_MAX_COMMAND) {
+	/* Fudge it to include disconnects */
+	if (command <= SERVER_MAX_COMMAND) {
 		connection->callback[command].cb = callback;
 		connection->callback[command].arg = arg;
 	}

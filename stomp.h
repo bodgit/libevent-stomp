@@ -36,6 +36,8 @@
 #define	STOMP_ACK_CLIENT		1
 #define	STOMP_ACK_CLIENT_INDIVIDUAL	2
 
+#define	SERVER_DISCONNECTED	(SERVER_MAX_COMMAND)
+
 enum stomp_server_command {
 	SERVER_CONNECTED,
 	SERVER_MESSAGE,
@@ -115,7 +117,7 @@ struct stomp_connection {
 		void	(*cb)(struct stomp_connection *,
 			    struct stomp_frame *, void *);
 		void	 *arg;
-	}			  callback[SERVER_MAX_COMMAND];
+	}			  callback[SERVER_MAX_COMMAND+1];
 
 	/* Heartbeat support */
 	int			  cx;
