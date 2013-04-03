@@ -122,6 +122,12 @@ stomp_timeout(int fd, short event, void *arg)
 	if (connection->frame.body)
 		free(connection->frame.body);
 	//free(connection);
+
+	if (connection->callback[SERVER_DISCONNECTED].cb)
+		connection->callback[SERVER_DISCONNECTED].cb(connection, NULL,
+		    connection->callback[SERVER_DISCONNECTED].arg);
+
+	stomp_connect(connection);
 }
 
 void
@@ -445,15 +451,15 @@ eventcb(struct bufferevent *bev, short events, void *arg)
 		/* Tear down connection */
 		bufferevent_free(connection->bev);
 
+		/* FIXME Need more free()'s here */
+		if (connection->frame.body)
+			free(connection->frame.body);
+
 		if ((events & BEV_EVENT_EOF) &&
 		    connection->callback[SERVER_DISCONNECTED].cb)
 			connection->callback[SERVER_DISCONNECTED].cb(connection,
 			    NULL,
 			    connection->callback[SERVER_DISCONNECTED].arg);
-
-		/* FIXME Need more free()'s here */
-		if (connection->frame.body)
-			free(connection->frame.body);
 
 		/* Schedule a reconnect attempt */
 		evtimer_add(connection->connect_ev,
