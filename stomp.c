@@ -537,6 +537,7 @@ stomp_subscribe(struct stomp_connection *connection, char *destination,
 	header = calloc(1, sizeof(struct stomp_header));
 	header->name = strdup("destination");
 	header->value = strdup(destination);
+	subscription->destination = strdup(destination);
 	TAILQ_INSERT_TAIL(&frame.headers, header, entry);
 
 	header = calloc(1, sizeof(struct stomp_header));
@@ -555,6 +556,7 @@ stomp_subscribe(struct stomp_connection *connection, char *destination,
 		header->value = strdup("auto");
 		break;
 	}
+	subscription->ack = ack;
 
 	TAILQ_INSERT_TAIL(&frame.headers, header, entry);
 
