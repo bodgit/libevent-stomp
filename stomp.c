@@ -81,8 +81,6 @@ char *stomp_client_commands[CLIENT_MAX_COMMAND] = {
 struct event_base	*base;
 struct evdns_base	*dns;
 
-struct stomp_transaction	*transaction;
-
 struct stomp_header *
 stomp_header_new(void)
 {
@@ -1047,91 +1045,3 @@ stomp_error(struct stomp_connection *connection, struct stomp_frame *frame)
 
 	return (0);
 }
-
-#if 0
-void
-test_connect_cb(struct stomp_connection *connection, struct stomp_frame *frame,
-    void *arg)
-{
-	struct stomp_header	*header;
-
-	if ((header = stomp_frame_header_find(frame, "server")) != NULL)
-		fprintf(stderr, "Server: %s\n", header->value);
-	stomp_subscribe(connection, "/queue/foo", STOMP_ACK_AUTO);
-	//transaction = stomp_begin(connection);
-	//stomp_subscribe(connection, "/exchange/foo/bar");
-}
-
-void
-test_message_cb(struct stomp_connection *connection, struct stomp_frame *frame, void *arg)
-{
-	struct stomp_header	*header;
-	static int		 count = 0;
-
-	fprintf(stderr, "Got frame -> %s\n",
-	    stomp_server_commands[frame->command]);
-	if (frame->body)
-		fprintf(stderr, "Frame body -> %s\n", frame->body);
-	count++;
-	if (((header = stomp_frame_header_find(frame, "ack")) != NULL) ||
-	    ((header = stomp_frame_header_find(frame, "message-id")) != NULL)) {
-		stomp_ack(connection, NULL, header->value, NULL);
-		//stomp_ack(connection, header->value, transaction);
-		//stomp_nack(connection, header->value, transaction);
-	}
-	/* After receiving three messages, commit or abort the transaction */
-	if (count == 3) {
-		//stomp_abort(connection, transaction);
-		//stomp_commit(connection, transaction);
-		stomp_disconnect(connection);
-		count = 0;
-		//transaction = stomp_begin(connection);
-	}
-}
-
-int
-main(int argc, char *argv[])
-{
-	struct event_base	*b;
-	SSL_CTX			*ctx;
-	struct timeval		 tv = { 10, 0 };	/* 10 seconds */
-	struct stomp_connection	*ca, *cb;
-
-	SSL_load_error_strings();
-	SSL_library_init();
-
-	ctx = SSL_CTX_new(SSLv23_client_method());
-
-	SSL_CTX_set_options(ctx, SSL_OP_NO_SSLv2);
-	SSL_CTX_set_verify(ctx, SSL_VERIFY_NONE, NULL);
-
-	b = event_base_new();
-
-	stomp_init(b, NULL);
-
-	if ((ca = stomp_connection_new("192.168.255.128", STOMP_DEFAULT_PORT,
-	    STOMP_VERSION_ANY, "/", NULL, tv, 1000, 1000)) == NULL)
-		return (-1);
-
-	stomp_connection_setcb(ca, SERVER_CONNECTED, test_connect_cb, NULL);
-	stomp_connection_setcb(ca, SERVER_MESSAGE, test_message_cb, NULL);
-
-	stomp_connect(ca);
-
-	if ((cb = stomp_connection_new("192.168.255.128",
-	    STOMP_DEFAULT_SSL_PORT, STOMP_VERSION_1_2, "/", ctx, tv, 1000,
-	    1000)) == NULL)
-		return (-1);
-
-	stomp_connection_setcb(cb, SERVER_CONNECTED, test_connect_cb, NULL);
-	stomp_connection_setcb(cb, SERVER_MESSAGE, test_message_cb, NULL);
-
-	stomp_connect(cb);
-
-	event_base_dispatch(b);
-
-	SSL_CTX_free(ctx);
-
-	return (0);
-}
-#endif
