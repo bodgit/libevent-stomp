@@ -14,23 +14,31 @@ Example usage:
     
     #include "stomp.h"
     
+    void message_cb(struct stomp_connection *, struct stomp_subscription *,
+        struct stomp_frame *, void *);
+    void connect_cb(struct stomp_connection *, struct stomp_frame *, void *);
+    
+    void
+    message_cb(struct stomp_connection *connection,
+        struct stomp_subscription *, struct stomp_frame *frame, void *arg)
+    {
+            printf("Got message %s\n", frame->body);
+    }
+    
     void
     connect_cb(struct stomp_connection *connection, struct stomp_frame *frame,
         void *arg)
     {
             struct stomp_header *header;
-
+            struct stomp_subscription *subscription;
+    
             if ((header = stomp_frame_header_find(frame, "server")) != NULL)
                     printf("Connected to %s\n", header->value);
     
-            stomp_subscribe(connection, "/queue/test");
-    }
-    
-    void
-    message_cb(struct stomp_connection *connection, struct stomp_frame *frame,
-        void *arg)
-    {
-            printf("Got message %s\n", frame->body);
+            subscription = stomp_subscription_new(connection, "/queue/test",
+                STOMP_ACK_AUTO);
+            stomp_subscription_setcb(subscription, message_cb, NULL);
+            stomp_subscribe(connection, subscription);
     }
     
     int
@@ -48,8 +56,7 @@ Example usage:
                 STOMP_VERSION_ANY, "/", NULL, tv, 1000, 1000)) == NULL)
                     return (-1);
     
-            stomp_connection_setcb(c, SERVER_CONNECTED, connect_cb, NULL);
-            stomp_connection_setcb(c, SERVER_MESSAGE, message_cb, NULL);
+            stomp_connection_setcb(c, connect_cb, NULL, NULL, NULL, NULL);
     
             stomp_connect(c);
     

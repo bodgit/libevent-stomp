@@ -28,10 +28,32 @@
 
 #include "stomp.h"
 
-int	  stomp_connected(struct stomp_connection *, struct stomp_frame *);
-int	  stomp_message(struct stomp_connection *, struct stomp_frame *);
-int	  stomp_receipt(struct stomp_connection *, struct stomp_frame *);
-int	  stomp_error(struct stomp_connection *, struct stomp_frame *);
+int				 stomp_connected(struct stomp_connection *,
+				    struct stomp_frame *);
+int				 stomp_message(struct stomp_connection *,
+				    struct stomp_frame *);
+int				 stomp_receipt(struct stomp_connection *,
+				    struct stomp_frame *);
+int				 stomp_error(struct stomp_connection *,
+				    struct stomp_frame *);
+struct stomp_header		*stomp_header_new(void);
+void				 stomp_headers_destroy(struct stomp_headers *);
+void				 stomp_heartbeat(int, short, void *);
+void				 stomp_timeout(int, short, void *);
+struct stomp_subscription	*stomp_subscription_find(struct stomp_connection *,
+				    char *);
+void				 stomp_frame_publish(struct stomp_connection *,
+				    struct stomp_frame *);
+void				 stomp_frame_receive(struct stomp_connection *,
+				    struct stomp_frame *);
+void				 stomp_read(struct bufferevent *, void *);
+void				 stomp_event(struct bufferevent *, short,
+				    void *);
+void				 stomp_count_rx(struct evbuffer *,
+				    const struct evbuffer_cb_info *, void *);
+void				 stomp_count_tx(struct evbuffer *,
+				    const struct evbuffer_cb_info *, void *);
+void				 stomp_reconnect(int, short, void *);
 
 /* Server frame dispatch table */
 int	(*stomp_server_dispatch[SERVER_MAX_COMMAND])(struct stomp_connection *,
@@ -42,26 +64,11 @@ int	(*stomp_server_dispatch[SERVER_MAX_COMMAND])(struct stomp_connection *,
 	stomp_error
 };
 
-char	 *stomp_server_commands[SERVER_MAX_COMMAND] = {
+char *stomp_server_commands[SERVER_MAX_COMMAND] = {
 	"CONNECTED",
 	"MESSAGE",
 	"RECEIPT",
 	"ERROR"
-};
-
-enum stomp_client_command {
-	CLIENT_SEND,
-	CLIENT_SUBSCRIBE,
-	CLIENT_UNSUBSCRIBE,
-	CLIENT_BEGIN,
-	CLIENT_COMMIT,
-	CLIENT_ABORT,
-	CLIENT_ACK,
-	CLIENT_NACK,
-	CLIENT_DISCONNECT,
-	CLIENT_CONNECT,
-	CLIENT_STOMP,
-	CLIENT_MAX_COMMAND
 };
 
 char *stomp_client_commands[CLIENT_MAX_COMMAND] = {
@@ -121,9 +128,8 @@ stomp_timeout(int fd, short event, void *arg)
 		free(connection->frame.body);
 	//free(connection);
 
-	if (connection->callback[SERVER_DISCONNECTED].cb)
-		connection->callback[SERVER_DISCONNECTED].cb(connection, NULL,
-		    connection->callback[SERVER_DISCONNECTED].arg);
+	if (connection->disconnectcb)
+		connection->disconnectcb(connection, connection->arg);
 
 	stomp_connect(connection);
 }
@@ -212,14 +218,10 @@ void
 stomp_frame_receive(struct stomp_connection *connection,
     struct stomp_frame *frame)
 {
-	if (frame->command < SERVER_MAX_COMMAND) {
+	if (frame->command < SERVER_MAX_COMMAND)
 		if (stomp_server_dispatch[frame->command](connection,
 		    frame) < 0)
 			return;
-		if (connection->callback[frame->command].cb)
-			connection->callback[frame->command].cb(connection,
-			    frame, connection->callback[frame->command].arg);
-	}
 
 	/* Track frame Rx */
 	connection->frames_rx++;
@@ -233,7 +235,7 @@ stomp_read(struct bufferevent *bev, void *arg)
 	struct evbuffer		*input = bufferevent_get_input(bev);
 	struct evbuffer_ptr	 p, p2;
 	struct stomp_header	*header;
-	int			 length;
+	size_t			 length;
 
 	/* Cancel inactivity timeout */
 	if (connection->timeout_ev &&
@@ -283,7 +285,7 @@ stomp_read(struct bufferevent *bev, void *arg)
 				if (p2.pos <= 0)
 					goto loop;
 
-				struct stomp_header *header = calloc(1, sizeof(struct stomp_header));
+				header = calloc(1, sizeof(struct stomp_header));
 				header->name = calloc(1, p2.pos + 1);
 				evbuffer_remove(input, header->name, p2.pos);
 
@@ -363,7 +365,7 @@ loop:
 }
 
 void
-eventcb(struct bufferevent *bev, short events, void *arg)
+stomp_event(struct bufferevent *bev, short events, void *arg)
 {
 	struct stomp_connection	*connection = (struct stomp_connection *)arg;
 	struct stomp_frame	 frame;
@@ -453,11 +455,8 @@ eventcb(struct bufferevent *bev, short events, void *arg)
 		if (connection->frame.body)
 			free(connection->frame.body);
 
-		if ((events & BEV_EVENT_EOF) &&
-		    connection->callback[SERVER_DISCONNECTED].cb)
-			connection->callback[SERVER_DISCONNECTED].cb(connection,
-			    NULL,
-			    connection->callback[SERVER_DISCONNECTED].arg);
+		if ((events & BEV_EVENT_EOF) && connection->disconnectcb)
+			connection->disconnectcb(connection, connection->arg);
 
 		/* Schedule a reconnect attempt */
 		evtimer_add(connection->connect_ev,
@@ -510,22 +509,43 @@ stomp_send(struct stomp_connection *connection,
 }
 
 struct stomp_subscription *
-stomp_subscribe(struct stomp_connection *connection, char *destination,
-    int ack)
+stomp_subscription_new(struct stomp_connection *connection,
+    char *destination, int ack)
 {
-	struct stomp_frame		 frame;
-	struct stomp_header		*header;
 	struct stomp_subscription	*subscription;
-	int				 size;
-
-	memset(&frame, 0, sizeof(frame));
-	frame.command = CLIENT_SUBSCRIBE;
-	TAILQ_INIT(&frame.headers);
+	size_t				 size;
 
 	subscription = calloc(1, sizeof(struct stomp_subscription));
 	size = snprintf(NULL, 0, "%lld", connection->subscription_id);
 	subscription->id = calloc(size + 1, sizeof(char));
 	sprintf(subscription->id, "%lld", connection->subscription_id++);
+
+	subscription->destination = strdup(destination);
+
+	subscription->ack = ack;
+
+	return (subscription);
+}
+
+void
+stomp_subscription_setcb(struct stomp_subscription *subscription,
+    void (*callback)(struct stomp_connection *, struct stomp_subscription *,
+    struct stomp_frame *, void *), void *arg)
+{
+	subscription->callback = callback;
+	subscription->arg = arg;
+}
+
+void
+stomp_subscribe(struct stomp_connection *connection,
+    struct stomp_subscription *subscription)
+{
+	struct stomp_frame		 frame;
+	struct stomp_header		*header;
+
+	memset(&frame, 0, sizeof(frame));
+	frame.command = CLIENT_SUBSCRIBE;
+	TAILQ_INIT(&frame.headers);
 
 	header = calloc(1, sizeof(struct stomp_header));
 	header->name = strdup("id");
@@ -534,14 +554,13 @@ stomp_subscribe(struct stomp_connection *connection, char *destination,
 
 	header = calloc(1, sizeof(struct stomp_header));
 	header->name = strdup("destination");
-	header->value = strdup(destination);
-	subscription->destination = strdup(destination);
+	header->value = strdup(subscription->destination);
 	TAILQ_INSERT_TAIL(&frame.headers, header, entry);
 
 	header = calloc(1, sizeof(struct stomp_header));
 	header->name = strdup("ack");
 
-	switch (ack) {
+	switch (subscription->ack) {
 	case STOMP_ACK_CLIENT:
 		header->value = strdup("client");
 		break;
@@ -554,7 +573,6 @@ stomp_subscribe(struct stomp_connection *connection, char *destination,
 		header->value = strdup("auto");
 		break;
 	}
-	subscription->ack = ack;
 
 	TAILQ_INSERT_TAIL(&frame.headers, header, entry);
 
@@ -564,8 +582,6 @@ stomp_subscribe(struct stomp_connection *connection, char *destination,
 	stomp_headers_destroy(&frame.headers);
 
 	TAILQ_INSERT_TAIL(&connection->subscriptions, subscription, entry);
-
-	return (subscription);
 }
 
 void
@@ -590,6 +606,12 @@ stomp_unsubscribe(struct stomp_connection *connection,
 	stomp_headers_destroy(&frame.headers);
 
 	TAILQ_REMOVE(&connection->subscriptions, subscription, entry);
+}
+
+void
+stomp_subscription_free(struct stomp_subscription *subscription)
+{
+	free(subscription->destination);
 	free(subscription->id);
 	free(subscription);
 }
@@ -826,9 +848,8 @@ stomp_disconnect(struct stomp_connection *connection)
 	    evtimer_pending(connection->timeout_ev, NULL))
 		evtimer_del(connection->timeout_ev);
 
-	if (connection->callback[SERVER_DISCONNECTED].cb)
-		connection->callback[SERVER_DISCONNECTED].cb(connection, NULL,
-		    connection->callback[SERVER_DISCONNECTED].arg);
+	if (connection->disconnectcb)
+		connection->disconnectcb(connection, connection->arg);
 }
 
 void
@@ -860,7 +881,7 @@ stomp_reconnect(int fd, short event, void *arg)
 		connection->bev = bevssl;
 	}
 
-	bufferevent_setcb(connection->bev, stomp_read, NULL, eventcb,
+	bufferevent_setcb(connection->bev, stomp_read, NULL, stomp_event,
 	    (void *)connection);
 	bufferevent_enable(connection->bev, EV_READ|EV_WRITE);
 
@@ -917,15 +938,16 @@ stomp_connection_new(char *host, unsigned short port, int version, char *vhost,
 
 void
 stomp_connection_setcb(struct stomp_connection *connection,
-    enum stomp_server_command command,
-    void (*callback)(struct stomp_connection *, struct stomp_frame *, void *),
-    void *arg)
+    void (*connectcb)(struct stomp_connection *, struct stomp_frame *, void *),
+    void (*receiptcb)(struct stomp_connection *, struct stomp_frame *, void *),
+    void (*errorcb)(struct stomp_connection *, struct stomp_frame *, void *),
+    void (*disconnectcb)(struct stomp_connection *, void *), void *arg)
 {
-	/* Fudge it to include disconnects */
-	if (command <= SERVER_MAX_COMMAND) {
-		connection->callback[command].cb = callback;
-		connection->callback[command].arg = arg;
-	}
+	connection->connectcb = connectcb;
+	connection->receiptcb = receiptcb;
+	connection->errorcb = errorcb;
+	connection->disconnectcb = disconnectcb;
+	connection->arg = arg;
 }
 
 void
@@ -998,6 +1020,9 @@ stomp_connected(struct stomp_connection *connection, struct stomp_frame *frame)
 		}
 	}
 
+	if (connection->connectcb)
+		connection->connectcb(connection, frame, connection->arg);
+
 	return (0);
 }
 
@@ -1020,6 +1045,10 @@ stomp_message(struct stomp_connection *connection, struct stomp_frame *frame)
 		if ((header = stomp_frame_header_find(frame, "ack")) == NULL)
 			return (-1);
 
+	if (subscription->callback)
+		subscription->callback(connection, subscription, frame,
+		    subscription->arg);
+
 	/* Track message Rx */
 	connection->messages_rx++;
 
@@ -1029,6 +1058,9 @@ stomp_message(struct stomp_connection *connection, struct stomp_frame *frame)
 int
 stomp_receipt(struct stomp_connection *connection, struct stomp_frame *frame)
 {
+	if (connection->receiptcb)
+		connection->receiptcb(connection, frame, connection->arg);
+
 	return (0);
 }
 
@@ -1036,6 +1068,9 @@ int
 stomp_error(struct stomp_connection *connection, struct stomp_frame *frame)
 {
 	fprintf(stderr, "Error -> %s", frame->body);
+
+	if (connection->errorcb)
+		connection->errorcb(connection, frame, connection->arg);
 
 	bufferevent_free(connection->bev);
 

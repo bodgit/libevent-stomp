@@ -36,10 +36,20 @@
 #define	STOMP_ACK_CLIENT		1
 #define	STOMP_ACK_CLIENT_INDIVIDUAL	2
 
-#define	SERVER_DISCONNECTED	(SERVER_MAX_COMMAND)
-
-enum stomp_server_command {
-	SERVER_CONNECTED,
+enum stomp_command {
+	CLIENT_SEND = 0,
+	CLIENT_SUBSCRIBE,
+	CLIENT_UNSUBSCRIBE,
+	CLIENT_BEGIN,
+	CLIENT_COMMIT,
+	CLIENT_ABORT,
+	CLIENT_ACK,
+	CLIENT_NACK,
+	CLIENT_DISCONNECT,
+	CLIENT_CONNECT,
+	CLIENT_STOMP,
+	CLIENT_MAX_COMMAND,
+	SERVER_CONNECTED = 0,
 	SERVER_MESSAGE,
 	SERVER_RECEIPT,
 	SERVER_ERROR,
@@ -53,16 +63,9 @@ struct stomp_header {
 };
 
 struct stomp_frame {
-	enum stomp_server_command		 command;
+	enum stomp_command			 command;
 	TAILQ_HEAD(stomp_headers, stomp_header)	 headers;
 	unsigned char				*body;
-};
-
-struct stomp_subscription {
-	TAILQ_ENTRY(stomp_subscription)	 entry;
-	char				*id;
-	char				*destination;
-	int				 ack;
 };
 
 struct stomp_transaction {
@@ -113,11 +116,15 @@ struct stomp_connection {
 	struct stomp_frame	  frame;
 
 	/* Callbacks */
-	struct {
-		void	(*cb)(struct stomp_connection *,
-			    struct stomp_frame *, void *);
-		void	 *arg;
-	}			  callback[SERVER_MAX_COMMAND+1];
+	void			(*connectcb)(struct stomp_connection *,
+				    struct stomp_frame *, void *);
+	void			(*receiptcb)(struct stomp_connection *,
+				    struct stomp_frame *, void *);
+	void			(*errorcb)(struct stomp_connection *,
+				    struct stomp_frame *, void *);
+	void			(*disconnectcb)(struct stomp_connection *,
+				    void *);
+	void			 *arg;
 
 	/* Heartbeat support */
 	int			  cx;
@@ -139,6 +146,17 @@ struct stomp_connection {
 	unsigned long long	  receipt_id;
 };
 
+struct stomp_subscription {
+	TAILQ_ENTRY(stomp_subscription)	  entry;
+	char				 *id;
+	char				 *destination;
+	int				  ack;
+	void				(*callback)(struct stomp_connection *,
+					    struct stomp_subscription *,
+					    struct stomp_frame *, void *);
+	void				 *arg;
+};
+
 struct stomp_header		*stomp_frame_header_find(struct stomp_frame *,
 				    char *);
 void				 stomp_init(struct event_base *,
@@ -147,17 +165,30 @@ struct stomp_connection		*stomp_connection_new(char *, unsigned short,
 				    int, char *, SSL_CTX *, struct timeval,
 				    int, int);
 void				 stomp_connection_setcb(struct stomp_connection *,
-				    enum stomp_server_command,
-				    void (*callback)(struct stomp_connection *,
-				    struct stomp_frame *, void *), void *);
+				    void (*connectcb)(struct stomp_connection *,
+				    struct stomp_frame *, void *),
+				    void (*receiptcb)(struct stomp_connection *,
+				    struct stomp_frame *, void *),
+				    void (*errorcb)(struct stomp_connection *,
+				    struct stomp_frame *, void *),
+				    void (*disconnectcb)(struct stomp_connection *,
+				    void *), void *);
 void				 stomp_connect(struct stomp_connection *);
+void				 stomp_disconnect(struct stomp_connection *);
 void				 stomp_connection_free(struct stomp_connection *);
 void				 stomp_send(struct stomp_connection *,
 				    struct stomp_transaction *);
-struct stomp_subscription	*stomp_subscribe(struct stomp_connection *,
+struct stomp_subscription	*stomp_subscription_new(struct stomp_connection *,
 				    char *, int);
+void				 stomp_subscription_setcb(struct stomp_subscription *,
+				    void (*callback)(struct stomp_connection *,
+				    struct stomp_subscription *,
+				    struct stomp_frame *, void *), void *);
+void				 stomp_subscribe(struct stomp_connection *,
+				    struct stomp_subscription *);
 void				 stomp_unsubscribe(struct stomp_connection *,
 				    struct stomp_subscription *);
+void				 stomp_subscription_free(struct stomp_subscription *);
 struct stomp_transaction	*stomp_begin(struct stomp_connection *);
 void				 stomp_commit(struct stomp_connection *,
 				    struct stomp_transaction *);
@@ -169,6 +200,5 @@ void				 stomp_ack(struct stomp_connection *,
 void				 stomp_nack(struct stomp_connection *,
 				    struct stomp_subscription *, char *,
 				    struct stomp_transaction *);
-void				 stomp_disconnect(struct stomp_connection *);
 
 #endif /* _STOMP_H */
