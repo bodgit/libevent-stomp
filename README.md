@@ -1,6 +1,8 @@
 libevent-stomp - asynchronous non-blocking STOMP client
 =======================================================
 
+[![Build Status](https://travis-ci.org/bodgit/libevent-stomp.png)](https://travis-ci.org/bodgit/libevent-stomp)
+
 Based around libevent bufferevents and designed to be used as part of a bigger
 libevent-based application.
 
