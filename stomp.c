@@ -54,6 +54,7 @@ void				 stomp_count_rx(struct evbuffer *,
 void				 stomp_count_tx(struct evbuffer *,
 				    const struct evbuffer_cb_info *, void *);
 void				 stomp_reconnect(int, short, void *);
+void				 stomp_shutdown(struct stomp_connection *);
 
 /* Server frame dispatch table */
 int	(*stomp_server_dispatch[SERVER_MAX_COMMAND])(struct stomp_connection *,
@@ -118,15 +119,7 @@ stomp_timeout(int fd, short event, void *arg)
 {
 	struct stomp_connection	*connection = (struct stomp_connection *)arg;
 
-	/* Cancel pending heartbeat */
-	if (evtimer_pending(connection->heartbeat_ev, NULL))
-		evtimer_del(connection->heartbeat_ev);
-	/* Tear down connection */
-	bufferevent_free(connection->bev);
-	/* FIXME Need more free()'s here */
-	if (connection->frame.body)
-		free(connection->frame.body);
-	//free(connection);
+	stomp_shutdown(connection);
 
 	if (connection->disconnectcb)
 		connection->disconnectcb(connection, connection->arg);
@@ -442,18 +435,7 @@ stomp_event(struct bufferevent *bev, short events, void *arg)
 				    ERR_error_string(ssl, NULL));
 		}
 
-		if (connection->timeout_ev &&
-		    evtimer_pending(connection->timeout_ev, NULL))
-			evtimer_del(connection->timeout_ev);
-		if (connection->heartbeat_ev &&
-		    evtimer_pending(connection->heartbeat_ev, NULL))
-			evtimer_del(connection->heartbeat_ev);
-		/* Tear down connection */
-		bufferevent_free(connection->bev);
-
-		/* FIXME Need more free()'s here */
-		if (connection->frame.body)
-			free(connection->frame.body);
+		stomp_shutdown(connection);
 
 		if ((events & BEV_EVENT_EOF) && connection->disconnectcb)
 			connection->disconnectcb(connection, connection->arg);
@@ -835,18 +817,8 @@ stomp_disconnect(struct stomp_connection *connection)
 
 	/* Clear down headers */
 	stomp_headers_destroy(&frame.headers);
-  
-	bufferevent_free(connection->bev);
-	/* FIXME */
-	connection->bev = NULL;
 
-	/* Stop sending heartbeats */
-	if (connection->heartbeat_ev &&
-	    evtimer_pending(connection->heartbeat_ev, NULL))
-		evtimer_del(connection->heartbeat_ev);
-	if (connection->timeout_ev &&
-	    evtimer_pending(connection->timeout_ev, NULL))
-		evtimer_del(connection->timeout_ev);
+	stomp_shutdown(connection);
 
 	if (connection->disconnectcb)
 		connection->disconnectcb(connection, connection->arg);
@@ -1079,4 +1051,30 @@ stomp_error(struct stomp_connection *connection, struct stomp_frame *frame)
 	    &connection->connect_tv[connection->connect_index]);
 
 	return (0);
+}
+
+void
+stomp_shutdown(struct stomp_connection *connection)
+{
+	/* Cancel heartbeat timers */
+	if (connection->timeout_ev) {
+		if (evtimer_pending(connection->timeout_ev, NULL))
+			evtimer_del(connection->timeout_ev);
+		event_free(connection->timeout_ev);
+		connection->timeout_ev = NULL;
+	}
+	if (connection->heartbeat_ev) {
+		if (evtimer_pending(connection->heartbeat_ev, NULL))
+			evtimer_del(connection->heartbeat_ev);
+		event_free(connection->heartbeat_ev);
+		connection->heartbeat_ev = NULL;
+	}
+
+	/* Tear down connection */
+	bufferevent_free(connection->bev);
+	connection->bev = NULL;
+
+	/* FIXME Need more free()'s here */
+	if (connection->frame.body)
+		free(connection->frame.body);
 }
