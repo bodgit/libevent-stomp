@@ -176,7 +176,8 @@ void				 stomp_connection_setcb(struct stomp_connection *,
 void				 stomp_connect(struct stomp_connection *);
 void				 stomp_disconnect(struct stomp_connection *);
 void				 stomp_connection_free(struct stomp_connection *);
-void				 stomp_send(struct stomp_connection *,
+void				 stomp_send(struct stomp_connection *, char *,
+				    unsigned char *,
 				    struct stomp_transaction *);
 struct stomp_subscription	*stomp_subscription_new(struct stomp_connection *,
 				    char *, int);

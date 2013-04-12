@@ -484,8 +484,28 @@ stomp_init(struct event_base *b, struct evdns_base *d)
 
 void
 stomp_send(struct stomp_connection *connection,
+    char *destination, unsigned char *body,
     struct stomp_transaction *transaction)
 {
+	struct stomp_frame		 frame;
+	struct stomp_header		*header;
+
+	memset(&frame, 0, sizeof(frame));
+	frame.command = CLIENT_SEND;
+	TAILQ_INIT(&frame.headers);
+
+	header = calloc(1, sizeof(struct stomp_header));
+	header->name = strdup("destination");
+	header->value = strdup(destination);
+	TAILQ_INSERT_TAIL(&frame.headers, header, entry);
+
+	frame.body = body;
+
+	stomp_frame_publish(connection, &frame);
+
+	/* Clear down headers */
+	stomp_headers_destroy(&frame.headers);
+
 	/* Track message Tx */
 	connection->messages_tx++;
 }
