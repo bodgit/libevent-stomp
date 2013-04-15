@@ -450,9 +450,9 @@ stomp_event(struct bufferevent *bev, short events, void *arg)
 			connection->connect_index++;
 	}
 
-	if (c->dns) {
-		evdns_base_free(c->dns, 1);
-		c->dns = NULL;
+	if (connection->dns) {
+		evdns_base_free(connection->dns, 1);
+		connection->dns = NULL;
 	}
 }
 
