@@ -49,7 +49,8 @@ Example usage:
             struct stomp_connection *c;
     
             base = event_base_new();
-            stomp_init(base, NULL);
+            if (stomp_init(base) < 0)
+                    return (-1);
     
             /* Pass an SSL_CTX * as argument #5 for SSL/TLS support */
             if ((c = stomp_connection_new("192.0.2.1", STOMP_DEFAULT_PORT,

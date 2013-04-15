@@ -87,7 +87,6 @@ char *stomp_client_commands[CLIENT_MAX_COMMAND] = {
 };
 
 struct event_base	*base;
-struct evdns_base	*dns;
 
 struct stomp_header *
 stomp_header_new(void)
@@ -450,6 +449,11 @@ stomp_event(struct bufferevent *bev, short events, void *arg)
 		if (connection->connect_index == 0)
 			connection->connect_index++;
 	}
+
+	if (c->dns) {
+		evdns_base_free(c->dns, 1);
+		c->dns = NULL;
+	}
 }
 
 void
@@ -470,16 +474,17 @@ stomp_count_tx(struct evbuffer *buffer, const struct evbuffer_cb_info *info,
 	connection->bytes_tx += info->n_deleted;
 }
 
-void
-stomp_init(struct event_base *b, struct evdns_base *d)
+int
+stomp_init(struct event_base *b)
 {
+#ifdef __APPLE__
+	if (!strcmp(event_base_get_method(b), "kqueue"))
+		return (-1);
+#endif
+
 	base = b;
 
-	/* Use provided evdns_base if given, otherwise create our own */
-	if (d)
-		dns = d;
-	else
-		dns = evdns_base_new(base, 1);
+	return (0);
 }
 
 void
@@ -849,11 +854,14 @@ stomp_reconnect(int fd, short event, void *arg)
 {
 	struct stomp_connection	*connection = (struct stomp_connection *)arg;
 
+	connection->dns = evdns_base_new(base, 1);
+
 	connection->bev = bufferevent_socket_new(base, -1,
 	    BEV_OPT_CLOSE_ON_FREE|BEV_OPT_DEFER_CALLBACKS);
 
-	if (bufferevent_socket_connect_hostname(connection->bev, dns,
-	    AF_UNSPEC, connection->host, connection->port) < 0) {
+	if (bufferevent_socket_connect_hostname(connection->bev,
+	    connection->dns, AF_UNSPEC, connection->host,
+	    connection->port) < 0) {
 		/* Error starting connection */
 		bufferevent_free(connection->bev);
 		return;

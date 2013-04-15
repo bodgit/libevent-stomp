@@ -81,6 +81,7 @@ enum stomp_frame_state {
 
 struct stomp_connection {
 	struct bufferevent	 *bev;
+	struct evdns_base	 *dns;
 
 	char			 *host;
 	unsigned short		  port;
@@ -159,8 +160,7 @@ struct stomp_subscription {
 
 struct stomp_header		*stomp_frame_header_find(struct stomp_frame *,
 				    char *);
-void				 stomp_init(struct event_base *,
-				    struct evdns_base *);
+int				 stomp_init(struct event_base *);
 struct stomp_connection		*stomp_connection_new(char *, unsigned short,
 				    int, char *, SSL_CTX *, struct timeval,
 				    int, int);
