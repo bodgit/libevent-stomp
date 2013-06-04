@@ -436,7 +436,7 @@ stomp_event(struct bufferevent *bev, short events, void *arg)
 
 		stomp_shutdown(connection);
 
-		if ((events & BEV_EVENT_EOF) && connection->disconnectcb)
+		if (connection->disconnectcb)
 			connection->disconnectcb(connection, connection->arg);
 
 		/* Schedule a reconnect attempt */
