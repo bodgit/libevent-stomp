@@ -92,6 +92,9 @@ struct stomp_connection {
 
 	char			 *vhost;
 
+	char			 *login;
+	char			 *passcode;
+
 	/* SSL */
 	SSL_CTX			 *ctx;
 
@@ -162,8 +165,8 @@ struct stomp_header		*stomp_frame_header_find(struct stomp_frame *,
 				    char *);
 int				 stomp_init(struct event_base *);
 struct stomp_connection		*stomp_connection_new(char *, unsigned short,
-				    int, char *, SSL_CTX *, struct timeval,
-				    int, int);
+				    int, char *, char *, char *, SSL_CTX *,
+				    struct timeval, int, int);
 void				 stomp_connection_setcb(struct stomp_connection *,
 				    void (*connectcb)(struct stomp_connection *,
 				    struct stomp_frame *, void *),

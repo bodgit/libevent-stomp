@@ -47,14 +47,17 @@ Example usage:
             struct event_base *base;
             struct timeval tv = { 10, 0 };
             struct stomp_connection *c;
+            char *user = "guest";
+            char *pass = "guest";
     
             base = event_base_new();
             if (stomp_init(base) < 0)
                     return (-1);
     
-            /* Pass an SSL_CTX * as argument #5 for SSL/TLS support */
+            /* Pass an SSL_CTX * as argument #7 for SSL/TLS support */
             if ((c = stomp_connection_new("192.0.2.1", STOMP_DEFAULT_PORT,
-                STOMP_VERSION_ANY, "/", NULL, tv, 1000, 1000)) == NULL)
+                STOMP_VERSION_ANY, "/", user, pass, NULL, tv, 1000,
+                1000)) == NULL)
                     return (-1);
     
             stomp_connection_setcb(c, connect_cb, NULL, NULL, NULL, NULL);
