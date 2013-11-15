@@ -876,6 +876,7 @@ stomp_reconnect(int fd, short event, void *arg)
 	    connection->dns, AF_UNSPEC, connection->host,
 	    connection->port) < 0) {
 		/* Error starting connection */
+		fprintf(stderr, "Error starting connection\n");
 		bufferevent_free(connection->bev);
 		return;
 	}
@@ -888,6 +889,7 @@ stomp_reconnect(int fd, short event, void *arg)
 		if ((bevssl = bufferevent_openssl_filter_new(base,
 		    connection->bev, ssl, BUFFEREVENT_SSL_CONNECTING,
 		    BEV_OPT_CLOSE_ON_FREE|BEV_OPT_DEFER_CALLBACKS)) == NULL) {
+			fprintf(stderr, "Error starting SSL connection\n");
 			bufferevent_free(connection->bev);
 			return;
 		}
