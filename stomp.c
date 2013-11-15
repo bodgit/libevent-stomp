@@ -423,7 +423,8 @@ stomp_event(struct bufferevent *bev, short events, void *arg)
 		stomp_headers_destroy(&frame.headers);
 	} else if (events & (BEV_EVENT_ERROR|BEV_EVENT_EOF)) {
 		if (events & BEV_EVENT_ERROR) {
-			fprintf(stderr, "Error\n");
+			fprintf(stderr, "Error: %s\n",
+			    evutil_socket_error_to_string(EVUTIL_SOCKET_ERROR()));
 			int err = bufferevent_socket_get_dns_error(bev);
 			if (err)
 				fprintf(stderr, "DNS error: %s\n",
