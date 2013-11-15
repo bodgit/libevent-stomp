@@ -894,6 +894,9 @@ stomp_reconnect(int fd, short event, void *arg)
 		connection->bev = bevssl;
 	}
 
+	/* Set a high read watermark of 1 MB */
+	bufferevent_setwatermark(connection->bev, EV_READ, 0, 1048576);
+
 	bufferevent_setcb(connection->bev, stomp_read, NULL, stomp_event,
 	    (void *)connection);
 	bufferevent_enable(connection->bev, EV_READ|EV_WRITE);
