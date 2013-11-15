@@ -408,6 +408,18 @@ stomp_event(struct bufferevent *bev, short events, void *arg)
 		header->value = strdup(connection->vhost);
 		TAILQ_INSERT_TAIL(&frame.headers, header, entry);
 
+		if (connection->login && connection->passcode) {
+			header = calloc(1, sizeof(struct stomp_header));
+			header->name = strdup("login");
+			header->value = strdup(connection->login);
+			TAILQ_INSERT_TAIL(&frame.headers, header, entry);
+
+			header = calloc(1, sizeof(struct stomp_header));
+			header->name = strdup("passcode");
+			header->value = strdup(connection->passcode);
+			TAILQ_INSERT_TAIL(&frame.headers, header, entry);
+		}
+
 		header = calloc(1, sizeof(struct stomp_header));
 		header->name = strdup("heart-beat");
 		size = snprintf(NULL, 0, "%u,%u", connection->cx,
@@ -897,7 +909,8 @@ stomp_reconnect(int fd, short event, void *arg)
 
 struct stomp_connection *
 stomp_connection_new(char *host, unsigned short port, int version, char *vhost,
-    SSL_CTX *ctx, struct timeval tv, int cx, int cy)
+    char *login, char *passcode, SSL_CTX *ctx, struct timeval tv, int cx,
+    int cy)
 {
 	struct stomp_connection	*connection;
 
@@ -925,6 +938,12 @@ stomp_connection_new(char *host, unsigned short port, int version, char *vhost,
 
 		/* vhost */
 		connection->vhost = strdup(vhost);
+
+		/* login/passcode */
+		if (login && passcode) {
+			connection->login = strdup(login);
+			connection->passcode = strdup(passcode);
+		}
 
 		/* SSL */
 		connection->ctx = ctx;
