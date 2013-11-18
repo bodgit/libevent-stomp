@@ -520,7 +520,7 @@ stomp_send(struct stomp_connection *connection,
 
 	header = calloc(1, sizeof(struct stomp_header));
 	header->name = strdup("content-length");
-	size = snprintf(NULL< 0, "%d", length);
+	size = snprintf(NULL, 0, "%d", length);
 	header->value = calloc(size + 1, sizeof(char));
 	sprintf(header->value, "%d", length);
 	TAILQ_INSERT_TAIL(&frame.headers, header, entry);
