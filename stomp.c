@@ -502,11 +502,12 @@ stomp_init(struct event_base *b)
 
 void
 stomp_send(struct stomp_connection *connection,
-    char *destination, unsigned char *body,
+    char *destination, unsigned char *body, size_t length,
     struct stomp_transaction *transaction)
 {
 	struct stomp_frame		 frame;
 	struct stomp_header		*header;
+	int				 size;
 
 	memset(&frame, 0, sizeof(frame));
 	frame.command = CLIENT_SEND;
@@ -515,6 +516,13 @@ stomp_send(struct stomp_connection *connection,
 	header = calloc(1, sizeof(struct stomp_header));
 	header->name = strdup("destination");
 	header->value = strdup(destination);
+	TAILQ_INSERT_TAIL(&frame.headers, header, entry);
+
+	header = calloc(1, sizeof(struct stomp_header));
+	header->name = strdup("content-length");
+	size = snprintf(NULL< 0, "%d", length);
+	header->value = calloc(size + 1, sizeof(char));
+	sprintf(header->value, "%d", length);
 	TAILQ_INSERT_TAIL(&frame.headers, header, entry);
 
 	frame.body = body;
@@ -575,6 +583,11 @@ stomp_subscribe(struct stomp_connection *connection,
 	header = calloc(1, sizeof(struct stomp_header));
 	header->name = strdup("destination");
 	header->value = strdup(subscription->destination);
+	TAILQ_INSERT_TAIL(&frame.headers, header, entry);
+
+	header = calloc(1, sizeof(struct stomp_header));
+	header->name = strdup("prefetch-count");
+	header->value = strdup("1000");
 	TAILQ_INSERT_TAIL(&frame.headers, header, entry);
 
 	header = calloc(1, sizeof(struct stomp_header));

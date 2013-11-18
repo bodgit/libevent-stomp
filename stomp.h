@@ -180,7 +180,7 @@ void				 stomp_connect(struct stomp_connection *);
 void				 stomp_disconnect(struct stomp_connection *);
 void				 stomp_connection_free(struct stomp_connection *);
 void				 stomp_send(struct stomp_connection *, char *,
-				    unsigned char *,
+				    unsigned char *, size_t,
 				    struct stomp_transaction *);
 struct stomp_subscription	*stomp_subscription_new(struct stomp_connection *,
 				    char *, int);
